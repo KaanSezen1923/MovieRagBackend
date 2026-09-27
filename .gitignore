@@ -1,0 +1,30 @@
+# Environments and Secrets
+.env
+.env*.local
+.env.*
+!.env.example
+
+# Python virtual environment
+venv/
+ENV/
+env/
+.venv/
+
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest / Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs and databases
+*.log
+*.sqlite3
+
+# IDE / Editor folders
+.vscode/
+.idea/
+*.swp

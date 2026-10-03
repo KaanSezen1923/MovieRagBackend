@@ -40,6 +40,7 @@ _REQUIRED_ENV_VARS = [
     "NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD",
     "AUTH_KEY",          # TMDB API key (server.py için)
     "WHISPER_API_KEY",   # Groq API key (transkripsiyon için)
+    "NVIDIA_API_KEY",    # NVIDIA Chat API key (client.py için)
 ]
 
 

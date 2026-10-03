@@ -1,0 +1,2050 @@
+{
+ "D01": {
+  "374720": {
+   "score": 2,
+   "reason": "Film Christopher Nolan tarafından yönetildi ve istek kriterlerini tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "1368337": {
+   "score": 2,
+   "reason": "Film yönetmeni Christopher Nolan olduğu için tüm açık kritere uyuyor ve istenen tema ile tam örtüşüyor.",
+   "by": "llm"
+  },
+  "27205": {
+   "score": 2,
+   "reason": "Film, Christopher Nolan yönetmenliğinde ve istenen yönetmen kriterini tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "11660": {
+   "score": 2,
+   "reason": "Film, Christopher Nolan tarafından yönetildiği için verilen yönetmen kriterini tamamen karşılıyor ve istenen Nolan filmleri önerisiyle uyumlu.",
+   "by": "llm"
+  },
+  "77": {
+   "score": 2,
+   "reason": "Film Christopher Nolan tarafından yönetildiği için kriteri tamamen karşılıyor ve kullanıcı isteğine uygun bir öneri.",
+   "by": "llm"
+  },
+  "1015606": {
+   "score": 0,
+   "reason": "Film Christopher Nolan tarafından yönetilmedi, bu yüzden yönetmen kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "426": {
+   "score": 0,
+   "reason": "Film Christopher Nolan tarafından yönetilmediği için yönetmen kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "872585": {
+   "score": 2,
+   "reason": "Film Christopher Nolan tarafından yönetildiği için kriteri tamamen karşılıyor ve kullanıcı isteğiyle uyumlu.",
+   "by": "llm"
+  },
+  "422": {
+   "score": 0,
+   "reason": "Film Federico Fellini tarafından yönetilmiş, Christopher Nolan kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "577922": {
+   "score": 2,
+   "reason": "Film Christopher Nolan tarafından yönetildi ve istenen yönetmen kriterini karşılıyor.",
+   "by": "llm"
+  },
+  "1115544": {
+   "score": 0,
+   "reason": "Film, Christopher Nolan yönetmenliğinde değil, bu yüzden açık kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "522931": {
+   "score": 0,
+   "reason": "Film Christopher Nolan tarafından yönetilmemiş, yönetmen kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "157336": {
+   "score": 2,
+   "reason": "Film, Christopher Nolan tarafından yönetildiği için verilen yönetmen kriterini tamamen karşılıyor ve istenen Nolan filmleri arasında yer alıyor.",
+   "by": "llm"
+  },
+  "155": {
+   "score": 2,
+   "reason": "Film Christopher Nolan tarafından yönetildiği için verilen yönetmen kriterini tamamen karşılıyor ve istenen Nolan filmi önerisiyle uyumlu.",
+   "by": "llm"
+  },
+  "1124": {
+   "score": 2,
+   "reason": "Film, Christopher Nolan tarafından yönetildiği için tüm açık kriterleri karşılıyor ve kullanıcı isteğine tam uyuyor.",
+   "by": "llm"
+  },
+  "814757": {
+   "score": 0,
+   "reason": "Film Sam Mendes tarafından yönetildi, Christopher Nolan yönetmen kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "539517": {
+   "score": 0,
+   "reason": "Filmin yönetmeni Doug Murphy, Christopher Nolan değil, bu yüzden kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "49026": {
+   "score": 2,
+   "reason": "Film, Christopher Nolan yönetmenliğinde ve istenen yönetmen kriterine tamamen uymaktadır.",
+   "by": "llm"
+  },
+  "272": {
+   "score": 2,
+   "reason": "Film, Christopher Nolan yönetmenliğinde ve kullanıcı isteğiyle tam uyumlu, bu yüzden tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "320": {
+   "score": 2,
+   "reason": "Film, Christopher Nolan tarafından yönetildiği için verilen yönetmen kriterini tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "310": {
+   "score": 0,
+   "reason": "Film Christopher Nolan tarafından yönetilmedi, bu yüzden yönetmen kriterini ihlal ediyor.",
+   "by": "llm"
+  }
+ },
+ "D02": {
+  "1541": {
+   "score": 0,
+   "reason": "Film Brad Pitt'i içermediği için kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "63": {
+   "score": 2,
+   "reason": "Film, Brad Pitt'i içerdiği için verilen tek kritere tamamen uyuyor.",
+   "by": "llm"
+  },
+  "107": {
+   "score": 1,
+   "reason": "Brad Pitt kriterini karşılıyor ancak film, kullanıcının 'en iyi' beklentisine tam olarak uymuyor.",
+   "by": "llm"
+  },
+  "13": {
+   "score": 0,
+   "reason": "Film Brad Pitt'i içermediği için oyuncu kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "11616": {
+   "score": 0,
+   "reason": "Film Brad Pitt'i içermediği için kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "5725": {
+   "score": 0,
+   "reason": "Film, Brad Pitt'i içermediği için oyuncu kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "76203": {
+   "score": 0,
+   "reason": "Filmde Brad Pitt yer almadığı için oyuncu kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "36685": {
+   "score": 0,
+   "reason": "Film Brad Pitt'i içermediği için kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "425980": {
+   "score": 0,
+   "reason": "Film Brad's Status Brad Pitt'i içermediği için 'Oyuncu: Brad Pitt' kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "161": {
+   "score": 1,
+   "reason": "Film Brad Pitt'i içeriyor ancak 'en iyi' olduğu kesin olmadığı için sadece kısmen uyuyor.",
+   "by": "llm"
+  },
+  "550": {
+   "score": 2,
+   "reason": "Film, Brad Pitt'in başrolünde olduğu yüksek puanlı bir yapım ve isteğe tam uyuyor.",
+   "by": "llm"
+  },
+  "466272": {
+   "score": 2,
+   "reason": "Film Brad Pitt'i içeriyor ve kullanıcı isteği olan 'Brad Pitt'in en iyi filmleri' kapsamında uygun bir öneri.",
+   "by": "llm"
+  },
+  "319": {
+   "score": 2,
+   "reason": "Brad Pitt filmde yer alıyor ve istekle uyumlu.",
+   "by": "llm"
+  },
+  "911430": {
+   "score": 2,
+   "reason": "Brad Pitt filmde yer alıyor ve verilen tek kriteri tamamen karşılıyor",
+   "by": "llm"
+  },
+  "6081": {
+   "score": 0,
+   "reason": "Film Brad Pitt'i içermediği için oyuncu kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "807": {
+   "score": 2,
+   "reason": "Brad Pitt filminde yer alıyor ve yüksek puanı ile isteğe uygun.",
+   "by": "llm"
+  },
+  "16869": {
+   "score": 2,
+   "reason": "Film, Brad Pitt'i içerdiği ve popüler bir yapım olduğu için isteğe tam uyuyor.",
+   "by": "llm"
+  },
+  "228150": {
+   "score": 2,
+   "reason": "Film, Brad Pitt'i içeriyor ve kullanıcı isteği olan 'en iyi Brad Pitt filmleri' bağlamına uygun bir aksiyon/dramadır.",
+   "by": "llm"
+  },
+  "9293": {
+   "score": 0,
+   "reason": "Film Brad Pitt'i içermediği için oyuncu kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "819": {
+   "score": 2,
+   "reason": "Film Brad Pitt'i içeriyor, istenen oyuncu kriterini karşılıyor ve konu/atmosfer Brad Pitt'in iyi filmleri sorusuna uygun.",
+   "by": "llm"
+  }
+ },
+ "D03": {
+  "414419": {
+   "score": 2,
+   "reason": "Film hem Crime türünde hem de Quentin Tarantino tarafından yönetilmiş, kullanıcı isteğiyle tam uyumlu.",
+   "by": "llm"
+  },
+  "6075": {
+   "score": 0,
+   "reason": "Film Crime türünde olsa da yönetmeni Quentin Tarantino değil, Brian De Palma olduğu için kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "75656": {
+   "score": 0,
+   "reason": "Film, Louis Leterrier yönetmenliğinde ve Tarantino'nun yönetmenliğinde olmadığı için kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "11074": {
+   "score": 0,
+   "reason": "Film Crime türünde olsa da yönetmeni Quentin Tarantino değil, bu sert kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "1480": {
+   "score": 0,
+   "reason": "Film Orson Welles tarafından yönetilmiş, Tarantino değil, bu yüzden sert yönetmen kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "6977": {
+   "score": 0,
+   "reason": "Film Coen kardeşler tarafından yönetilmiş, Tarantino değil; bu yüzden zor kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "299": {
+   "score": 0,
+   "reason": "Film, yön yönetmen olarak Quentin Tarantino'yu karşılamıyor.",
+   "by": "llm"
+  },
+  "393": {
+   "score": 2,
+   "reason": "Film hem Crime türünde hem de Quentin Tarantino tarafından yönetilmiş, kullanıcı isteğiyle tam uyumlu.",
+   "by": "llm"
+  },
+  "184": {
+   "score": 2,
+   "reason": "Film, istenen Crime türünde ve yönetmen Quentin Tarantino olduğundan tüm açık kriterleri karşılıyor ve konu/atmosfer olarak da isteğe tam uyuyor.",
+   "by": "llm"
+  },
+  "111": {
+   "score": 0,
+   "reason": "Yönetmen Tarantino değil, Brian De Palma olduğu için kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "187": {
+   "score": 1,
+   "reason": "Film Crime türünde ama yönetmeni Quentin Tarantino değil ya da bilinmediği için tam kriteri karşılamıyor.",
+   "by": "llm"
+  },
+  "680": {
+   "score": 2,
+   "reason": "Film hem Crime türünü içeriyor hem de Quentin Tarantino tarafından yönetilmiş, istenen kriterleri tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "319": {
+   "score": 0,
+   "reason": "Film Tarantino tarafından yönetilmemiş, bu yüzden yönetmen kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "24": {
+   "score": 2,
+   "reason": "Kill Bill: Vol. 1, Quentin Tarantino tarafından yönetilmiş ve Crime türünde olduğu için tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "500": {
+   "score": 2,
+   "reason": "Film hem istenen Crime türünü hem de Quentin Tarantino yönetmenliğini karşılıyor ve konu olarak da suç temasıyla tam uyum sağlıyor.",
+   "by": "llm"
+  },
+  "339403": {
+   "score": 0,
+   "reason": "Yönetmen Tarantino olmadığı için sert kriteri ihlal ediyor.",
+   "by": "llm"
+  }
+ },
+ "D04": {
+  "679": {
+   "score": 2,
+   "reason": "Film is Science Fiction ve kullanıcı isteğiyle tam uyumlu.",
+   "by": "llm"
+  },
+  "1140066": {
+   "score": 2,
+   "reason": "Paradise (2023) is a Science Fiction film that fits the requested genre and theme.",
+   "by": "llm"
+  },
+  "27205": {
+   "score": 2,
+   "reason": "Inception matches the requested Science Fiction genre and its sci-fi premise aligns well with the user's request.",
+   "by": "llm"
+  },
+  "569094": {
+   "score": 2,
+   "reason": "Film, Science Fiction türünü içeriyor ve çoklu evren temasıyla sci‑fi atmosferine tam uyuyor.",
+   "by": "llm"
+  },
+  "105": {
+   "score": 2,
+   "reason": "Film, istenen Science Fiction türünü içeriyor ve zaman yolculuğu temasıyla bilim kurgu atmosferine tam uyuyor.",
+   "by": "llm"
+  },
+  "18491": {
+   "score": 2,
+   "reason": "Film, istenen Science Fiction türünü ve konusunu tam olarak karşılıyor.",
+   "by": "llm"
+  },
+  "603": {
+   "score": 2,
+   "reason": "Film is Science Fiction ve istenen türe tam uyuyor",
+   "by": "llm"
+  },
+  "324857": {
+   "score": 2,
+   "reason": "Film, Science Fiction türünde ve kullanıcı isteğiyle uyumlu bir konuyu işliyor.",
+   "by": "llm"
+  },
+  "157336": {
+   "score": 2,
+   "reason": "Film, Science Fiction türünde ve kullanıcı isteğiyle tam uyumlu, istenen kriterleri eksiksiz karşılıyor.",
+   "by": "llm"
+  },
+  "365942": {
+   "score": 2,
+   "reason": "Film is Science Fiction, matching the requested genre and its plot aligns with sci‑fi expectations.",
+   "by": "llm"
+  },
+  "299534": {
+   "score": 2,
+   "reason": "Avengers: Endgame includes Science Fiction in its genres and its futuristic, universe‑spanning storyline matches the requested sci‑fi theme.",
+   "by": "llm"
+  },
+  "1184918": {
+   "score": 2,
+   "reason": "Film, istenen Science Fiction türünü içeriyor ve konusuyla da sci‑fi teması uyumlu.",
+   "by": "llm"
+  },
+  "9663": {
+   "score": 2,
+   "reason": "Film Science Fiction türünde ve konusuyla kullanıcı isteğine tam uyuyor.",
+   "by": "llm"
+  },
+  "1891": {
+   "score": 2,
+   "reason": "Film, istenen Science Fiction türünü içeriyor ve kullanıcı isteğiyle tam uyumlu bir bilim kurgu deneyimi sunuyor.",
+   "by": "llm"
+  },
+  "348": {
+   "score": 2,
+   "reason": "Alien hem Science Fiction türünü içeriyor hem de istenen bilim kurgu atmosferine tam uyuyor.",
+   "by": "llm"
+  },
+  "687163": {
+   "score": 2,
+   "reason": "Film is Science Fiction, matching the requested genre, and its plot is a sci‑fi story, fulfilling the user's request.",
+   "by": "llm"
+  },
+  "299536": {
+   "score": 2,
+   "reason": "Film, Science Fiction türünde ve kullanıcı isteğiyle uyumlu bir konuyu (kozmik tehdit ve evren) işliyor.",
+   "by": "llm"
+  }
+ },
+ "D05": {
+  "1465563": {
+   "score": 2,
+   "reason": "Film bir komedi ve romance içermiyor, ayrıca romantik bir tema da bulunmuyor, bu yüzden tüm kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "987032": {
+   "score": 2,
+   "reason": "Film bir komedi içeriyor, romantik türü içermiyor ve özetinde romantik bir tema bulunmuyor.",
+   "by": "llm"
+  },
+  "15544": {
+   "score": 2,
+   "reason": "Film bir komedi ve romantik unsurları içermediği için istenen ve istenmeyen tür kriterlerini tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "105": {
+   "score": 0,
+   "reason": "Filmde romantik bir alt hikâye var ve 'romantik değil' sert kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "77338": {
+   "score": 2,
+   "reason": "Film bir komedi ve romantik unsurları içermediği için istenen tür ve sert kriterleri tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "11397": {
+   "score": 0,
+   "reason": "Filmde romantik bir hikâye bulunması, 'romantik değil' sert kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "595723": {
+   "score": 0,
+   "reason": "Film komedi olsa da özetinde romantizm içerdiği belirtiliyor, bu da 'romantik olmamalı' sert kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "529414": {
+   "score": 2,
+   "reason": "Film bir komedi ve romantik unsurları içermediği için tüm açık ve sert kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "7270": {
+   "score": 2,
+   "reason": "Film bir komedi içeriyor, romantik unsurları yok ve istenmeyen Romance türünden uzak, bu yüzden tüm kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "680": {
+   "score": 2,
+   "reason": "Film Comedy içeriyor, Romance türü yok ve romantik bir tema taşımıyor, bu yüzden tüm açık ve sert kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "496243": {
+   "score": 2,
+   "reason": "Film komedi türünde ve romantik bir tema içermiyor, istenen kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "553147": {
+   "score": 2,
+   "reason": "Film bir komedi ve romantik unsurları içermediği için tüm açık ve sert kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "1302151": {
+   "score": 1,
+   "reason": "Film komedi türünde ama özetindeki sahte evlilik teması romantik unsurlar içerebilir, bu yüzden kesin olarak romantik olmadığını doğrulayamıyoruz.",
+   "by": "llm"
+  },
+  "637": {
+   "score": 1,
+   "reason": "Film komedi türünde olsa da atmosferi ciddi ve dramatik olduğu için istenen hafif komedi atmosferine tam olarak uymuyor.",
+   "by": "llm"
+  },
+  "40996": {
+   "score": 2,
+   "reason": "Film comedy türünde ve özetinde romantik bir unsur bulunmadığından istenmeyen Romance türünden ve sert 'romantik değil' kriterinden tamamen uyuyor.",
+   "by": "llm"
+  },
+  "772071": {
+   "score": 2,
+   "reason": "Film komedi türünde ve romantik unsurları içermiyor, istenen ve istenmeyen tür kriterlerini tam karşılıyor.",
+   "by": "llm"
+  }
+ },
+ "D06": {
+  "11349": {
+   "score": 2,
+   "reason": "Cape Fear is a thriller (no horror) with tense, suspenseful plot, fully matching the requested genre and atmosphere.",
+   "by": "llm"
+  },
+  "1621552": {
+   "score": 2,
+   "reason": "Film bir thriller, korku içermiyor ve istenen gerilim atmosferine uygun.",
+   "by": "llm"
+  },
+  "115348": {
+   "score": 1,
+   "reason": "Tür ve korku dışı şartları karşılıyor ancak düşük puanı nedeniyle istenen 'güzel' gerilim atmosferine tam uymuyor.",
+   "by": "llm"
+  },
+  "707": {
+   "score": 2,
+   "reason": "Film is bir Thriller ve Horror içermiyor, istenen tür ve atmosfer koşullarını tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "1383731": {
+   "score": 2,
+   "reason": "Film is a Thriller (no Horror), fits the requested non‑horror thriller vibe.",
+   "by": "llm"
+  },
+  "550": {
+   "score": 2,
+   "reason": "Film Thriller türünde ve Horror içermediği için istenen kriterleri tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "37686": {
+   "score": 1,
+   "reason": "Film thriller ve horror türünde değil, ancak korkutucu öğeler içerdiği için tam olarak 'korku olmasın' beklentisini karşılamıyor.",
+   "by": "llm"
+  },
+  "155": {
+   "score": 2,
+   "reason": "Film bir thriller ve horror içermiyor, istenen tür ve içerik kriterlerini tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "680": {
+   "score": 2,
+   "reason": "Film is bir thriller ve horror içermiyor, istenen türle uyumlu ve korku içermeyen bir gerilim atmosferi sunuyor.",
+   "by": "llm"
+  },
+  "1419406": {
+   "score": 2,
+   "reason": "Film thriller türünde ve korku içermiyor, kullanıcı isteğine tam uyuyor.",
+   "by": "llm"
+  },
+  "496243": {
+   "score": 2,
+   "reason": "Parasite is a thriller (no horror) and fits the request for a good, non‑horror thriller.",
+   "by": "llm"
+  },
+  "12493": {
+   "score": 2,
+   "reason": "Film Thriller türünde ve Horror içermiyor, istenen kriterleri tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "567": {
+   "score": 2,
+   "reason": "Film is bir thriller, korku içermiyor ve istenen gerilim atmosferine tam uyuyor.",
+   "by": "llm"
+  },
+  "10494": {
+   "score": 2,
+   "reason": "Perfect Blue is a Thriller (not Horror) and its psychological tension fits the request for a non‑horror, good thriller.",
+   "by": "llm"
+  },
+  "807": {
+   "score": 2,
+   "reason": "Film Thriller türünde, Horror içermiyor ve kullanıcı isteğiyle uyumlu karanlık bir gerilim sunuyor.",
+   "by": "llm"
+  },
+  "244786": {
+   "score": 2,
+   "reason": "Whiplash is listed as a Thriller (not Horror) and its intense, suspenseful plot fits the requested non‑horror thriller vibe.",
+   "by": "llm"
+  },
+  "274": {
+   "score": 2,
+   "reason": "Film Thriller türünde ve Horror içermiyor, kullanıcı isteğiyle tam uyumlu.",
+   "by": "llm"
+  }
+ },
+ "D07": {
+  "128": {
+   "score": 2,
+   "reason": "Film Adventure türünde ve Action türü içermiyor, istenen kritere tam uyuyor.",
+   "by": "llm"
+  },
+  "105": {
+   "score": 2,
+   "reason": "Film Adventure türünde ve Action türü içermediği için tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "5683": {
+   "score": 2,
+   "reason": "Film Adventure türünde ve Action içermiyor, istenen kriterlere tam uyuyor.",
+   "by": "llm"
+  },
+  "10212": {
+   "score": 2,
+   "reason": "Film Adventure türünde ve Action türü içermiyor, istenen kriterleri tam karşılıyor.",
+   "by": "llm"
+  },
+  "4935": {
+   "score": 2,
+   "reason": "Film Adventure türünde ve Action türü içermiyor, bu yüzden kullanıcı isteğiyle tam uyumlu.",
+   "by": "llm"
+  },
+  "1226863": {
+   "score": 2,
+   "reason": "Film Adventure türünde ve Action türü içermiyor, istenen kriterlere tam uyuyor.",
+   "by": "llm"
+  },
+  "157336": {
+   "score": 2,
+   "reason": "Film Adventure türünde ve Action türü içinde yer almadığından tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "315162": {
+   "score": 2,
+   "reason": "Film Adventure türünde ve Action türü içermiyor, tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "11259": {
+   "score": 2,
+   "reason": "Film Adventure türünde, Action içermiyor ve macera teması kullanıcı isteğiyle uyumlu.",
+   "by": "llm"
+  },
+  "1084244": {
+   "score": 2,
+   "reason": "Film Adventure türünde ve Action türü içermiyor, istenen kriterlere tam uyuyor.",
+   "by": "llm"
+  },
+  "4546": {
+   "score": 2,
+   "reason": "Film Adventure türünde ve Action içermiyor, istenen kriterleri tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "1184918": {
+   "score": 2,
+   "reason": "Film Adventure türünde ve Action içermiyor, konusuyla da aksiyon barındırmayan bir macera isteğine tam uyuyor.",
+   "by": "llm"
+  },
+  "667276": {
+   "score": 2,
+   "reason": "Film Adventure türünde ve Action türünü içermiyor, istenen kriterleri tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "1007757": {
+   "score": 2,
+   "reason": "Film macera türünde ve aksiyon içermeyen bir konuyla, istenen kriterleri tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "687163": {
+   "score": 2,
+   "reason": "Film Adventure türünde ve Action türü listelenmemiş, istenen kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "38985": {
+   "score": 2,
+   "reason": "Film Adventure türünde ve Action türü içermiyor, istenen kriterleri tamamen karşılıyor.",
+   "by": "llm"
+  }
+ },
+ "D08": {
+  "473": {
+   "score": 1,
+   "reason": "Pi, psikolojik bir thriller ve gizem unsurları taşısa da Inception'ın bilimkurgu, aksiyon ve rüya-manipülasyonu temaları eksik olduğu için sadece kısmen benzer.",
+   "by": "llm"
+  },
+  "27205": {
+   "score": 2,
+   "reason": "Film Inception, is exactly the reference film, fully matching genre, theme and requested similarity.",
+   "by": "llm"
+  },
+  "803923": {
+   "score": 0,
+   "reason": "Film, Inception ile tematik ve tür olarak (sci‑fi, rüya/gerçeklik teması) uyumlu değil, sadece bir gerilim/mystery ve düşük puanlı.",
+   "by": "llm"
+  },
+  "529216": {
+   "score": 1,
+   "reason": "Mirage, bir gizem ve gerilim filmi olarak Inception'ın zihinsel karmaşasını andırsa da tür olarak bilim kurgu ve aksiyon eksikliği nedeniyle tam olarak eşleşmiyor.",
+   "by": "llm"
+  },
+  "13455": {
+   "score": 1,
+   "reason": "Push shares sci‑fi and thriller elements with Inception, but its psychic‑warfare plot differs from Inception's dream‑heist premise, so similarity is partial.",
+   "by": "llm"
+  },
+  "641": {
+   "score": 0,
+   "reason": "Requiem for a Dream is a drama/crime about addiction, not thematically or genre-wise similar to Inception.",
+   "by": "llm"
+  },
+  "603": {
+   "score": 2,
+   "reason": "Matrix shares the mind‑bending, reality‑questioning premise and sci‑fi action that make it clearly similar to Inception.",
+   "by": "llm"
+  },
+  "1954": {
+   "score": 2,
+   "reason": "Kelebek Etkisi, bilim kurgu ve gerilim türünde olup zaman yolculuğu ve gerçekliği değiştirme temalarıyla Inception'a benzer bir atmosfer sunuyor.",
+   "by": "llm"
+  },
+  "157336": {
+   "score": 1,
+   "reason": "Interstellar, aynı yönetmen ve yüksek konseptli bilim kurgu olmasıyla kısmen benzer, ancak konusunun Inception'daki rüya/gerçek katmanlarından farklı olması nedeniyle tam uyum sağlamaz.",
+   "by": "llm"
+  },
+  "9620": {
+   "score": 1,
+   "reason": "Tür eşleşiyor ancak konu ve atmosfer Inception ile belirgin farklılık gösteriyor.",
+   "by": "llm"
+  },
+  "436343": {
+   "score": 1,
+   "reason": "Ortak rüya teması Inception'a benzer, fakat drama/romans türü ve atmosferi Inception'ın bilim‑kurgu/gerilim havasından farklı.",
+   "by": "llm"
+  },
+  "1018": {
+   "score": 1,
+   "reason": "Mulholland Drive shares thriller and mystery elements with Inception but lacks the sci‑fi, dream‑heist focus, so it only partially matches the requested similarity.",
+   "by": "llm"
+  },
+  "353491": {
+   "score": 1,
+   "reason": "The Dark Tower shares sci‑fi/action elements with Inception but lacks the mind‑bending, dream‑heist atmosphere, so it only partially matches the requested similarity.",
+   "by": "llm"
+  },
+  "348350": {
+   "score": 0,
+   "reason": "Solo: A Star Wars Story is a space adventure/action film, not thematically or atmospherically similar to Inception.",
+   "by": "llm"
+  },
+  "670292": {
+   "score": 1,
+   "reason": "The Creator shares sci‑fi and high‑concept themes with Inception, but its plot differs significantly, so similarity is only partial.",
+   "by": "llm"
+  }
+ },
+ "D09": {
+  "1161617": {
+   "score": 0,
+   "reason": "Code 3, bir paramedik hikâyesi ve komedi‑aksiyon‑dram türleriyle, Parasite gibi toplumsal eleştiri teması taşımıyor.",
+   "by": "llm"
+  },
+  "389": {
+   "score": 1,
+   "reason": "12 Angry Men sosyal eleştiri içeriyor ancak Parasite'in sınıf çatışması ve kara mizah atmosferiyle tam olarak örtüşmüyor.",
+   "by": "llm"
+  },
+  "612304": {
+   "score": 0,
+   "reason": "Film, Parasite'ın toplumsal eleştiri temasıyla alakasız bir spiritüalizm hikayesi olduğu için kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "987032": {
+   "score": 0,
+   "reason": "Film toplumsal eleştiri teması taşımıyor, Parasite gibi bir sosyal eleştiri sunmadığı için kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "639988": {
+   "score": 2,
+   "reason": "Film, Parasite'ın sınıfsal ve toplumsal eleştirisini yansıtan bir konu ve benzer türlerde (komedi, suç, gerilim) olduğu için tam uyum sağlıyor.",
+   "by": "llm"
+  },
+  "1560520": {
+   "score": 0,
+   "reason": "Film, Parasite gibi toplumsal eleştiri teması taşımıyor ve istenen kritere uymuyor.",
+   "by": "llm"
+  },
+  "1026227": {
+   "score": 1,
+   "reason": "Film sosyal sınıf eleştirisi içeriyor ve tür olarak drama/komedi uyuyor, ancak atmosfer ve dönem açısından Parasite ile tam olarak örtüşmüyor.",
+   "by": "llm"
+  },
+  "278": {
+   "score": 1,
+   "reason": "The Shawshank Redemption is a drama/crime film with some social commentary on the prison system, but it lacks the direct class‑based societal critique and tonal similarity of Parasite.",
+   "by": "llm"
+  },
+  "12405": {
+   "score": 1,
+   "reason": "Film sosyal eleştiri içeriyor ancak atmosferi Parasite kadar karanlık ve keskin değil.",
+   "by": "llm"
+  },
+  "496243": {
+   "score": 2,
+   "reason": "Film tam olarak Parasite olduğu için istenen toplumsal eleştiri temasına ve kriterlere tamamen uyuyor.",
+   "by": "llm"
+  },
+  "240": {
+   "score": 0,
+   "reason": "The Godfather Part II focuses on mafia family drama rather than the societal critique central to Parasite.",
+   "by": "llm"
+  },
+  "936075": {
+   "score": 1,
+   "reason": "Film tür ve puan açısından uygun, ancak içeriği Parasite gibi toplumsal eleştiri sunmuyor.",
+   "by": "llm"
+  },
+  "56831": {
+   "score": 0,
+   "reason": "The Sunset Limited lacks the class‑based social critique central to Parasite, so it does not match the requested theme.",
+   "by": "llm"
+  },
+  "238": {
+   "score": 0,
+   "reason": "The Godfather is a crime drama about a mafia family and lacks the explicit social critique focus of Parasite.",
+   "by": "llm"
+  },
+  "406997": {
+   "score": 0,
+   "reason": "Wonder bir aile/dram filmi olup Parasite'in sınıf eleştirisi ve toplumsal temasıyla uyumlu değil.",
+   "by": "llm"
+  },
+  "266": {
+   "score": 0,
+   "reason": "Film, sosyal sınıf eleştirisi ve Parasite'ın temasıyla uyumlu değil, konu ve atmosfer açısından istenene uymuyor.",
+   "by": "llm"
+  },
+  "424": {
+   "score": 0,
+   "reason": "Schindler's List farklı türde ve atmosferde, Parasite gibi toplumsal eleştiri ve kara komedi sunmuyor.",
+   "by": "llm"
+  }
+ },
+ "D10": {
+  "283566": {
+   "score": 0,
+   "reason": "Film uzayda yalnız bir astronotun sakin, düşündürücü hikayesini içermiyor ve uzayda geçmiyor.",
+   "by": "llm"
+  },
+  "828": {
+   "score": 0,
+   "reason": "Film uzayda geçmiyor, yalnız bir astronot ve sakin, düşündürücü atmosfer içermiyor.",
+   "by": "llm"
+  },
+  "78": {
+   "score": 0,
+   "reason": "Blade Runner uzayda geçmez; ana karakter bir astronot değil ve film temposu sakin/düşündürücü değil.",
+   "by": "llm"
+  },
+  "19": {
+   "score": 0,
+   "reason": "Metropolis uzayda geçmez ve sakin, düşündürücü bir tempo sunmaz, bu yüzden sert kriterleri ihlal ediyor.",
+   "by": "llm"
+  },
+  "282848": {
+   "score": 0,
+   "reason": "Film uzayda geçse de yalnız bir astronot ve sakin, düşündürücü bir atmosfer yerine çoklu karakterler ve aksiyon odaklı bir hikaye sunuyor.",
+   "by": "llm"
+  },
+  "18491": {
+   "score": 0,
+   "reason": "Film uzayda yalnız bir astronotun sakin, düşündürücü hikayesini içermiyor ve atmosferi istenen sakin tempo ile uyuşmuyor.",
+   "by": "llm"
+  },
+  "49047": {
+   "score": 1,
+   "reason": "Film uzayda geçiyor ve yalnız bir astronot kalıyor, ancak tempo sakin ve düşündürücü değil, daha çok gerilim dolu.",
+   "by": "llm"
+  },
+  "274870": {
+   "score": 0,
+   "reason": "Film uzayda geçiyor ama yalnız bir astronot ve sakin, düşündürücü atmosfer kriterlerini karşılamıyor.",
+   "by": "llm"
+  },
+  "157336": {
+   "score": 0,
+   "reason": "Film bir grup astronot içeriyor, yalnız bir astronotun sakin ve düşündürücü hikayesi gereksinimini karşılamıyor.",
+   "by": "llm"
+  },
+  "1124": {
+   "score": 0,
+   "reason": "Film uzayda geçmedi ve konu, yalnız bir astronotun sakin, düşündürücü hikayesiyle alakasız.",
+   "by": "llm"
+  },
+  "286217": {
+   "score": 1,
+   "reason": "Film uzayda geçiyor ama temposu sakin ve düşündürücü değil, daha çok macera ve mizah içeriyor.",
+   "by": "llm"
+  },
+  "1398": {
+   "score": 0,
+   "reason": "Film uzayda geçmiyor ve yalnız bir astronotla ilgili değil, bu yüzden sert kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "1072371": {
+   "score": 0,
+   "reason": "Film uzayda geçmiyor ve yalnız bir astronotla ilgili değil.",
+   "by": "llm"
+  },
+  "10386": {
+   "score": 0,
+   "reason": "Film uzayda geçmiyor ve yalnız bir astronot teması içermiyor, bu yüzden sert kriterleri ihlal ediyor.",
+   "by": "llm"
+  },
+  "1167366": {
+   "score": 0,
+   "reason": "Film yalnız bir astronot ve sakin, düşündürücü bir atmosfer yerine iki karakterli romantik bir hikaye sunuyor, bu yüzden açık kriterleri ihlal ediyor.",
+   "by": "llm"
+  },
+  "38": {
+   "score": 0,
+   "reason": "Film uzayda geçmiyor ve yalnız bir astronotun hikayesini içermiyor, bu yüzden sert kriterleri ihlal ediyor.",
+   "by": "llm"
+  }
+ },
+ "D11": {
+  "863873": {
+   "score": 2,
+   "reason": "Film, gizem ve bilim kurgu öğeleriyle zihin bükücü, kafa karıştırıcı bir atmosfer sunuyor.",
+   "by": "llm"
+  },
+  "63": {
+   "score": 2,
+   "reason": "12 Maymun, zaman yolculuğu ve karmaşık kurgusuyla kafa karıştıran, zihin bükücü bir film arayışına tam uyuyor.",
+   "by": "llm"
+  },
+  "198663": {
+   "score": 1,
+   "reason": "The Maze Runner has mystery and sci‑fi elements but is more an action‑adventure than a truly mind‑bending, confusing film.",
+   "by": "llm"
+  },
+  "536437": {
+   "score": 1,
+   "reason": "Film bilim kurgu ve gizem unsurları taşısa da özet, zihni bükücü bir atmosferi açıkça göstermiyor, bu yüzden sadece kısmen uyuyor.",
+   "by": "llm"
+  },
+  "586047": {
+   "score": 1,
+   "reason": "Film bilim kurgu ve gizem içeriyor, ancak açıklaması tam olarak 'kafa karıştıran, zihin bükücü' bir atmosferi garanti etmiyor.",
+   "by": "llm"
+  },
+  "1090": {
+   "score": 2,
+   "reason": "Film, sanal gerçeklik ve zaman yolculuğu temalarıyla zihin bükücü, kafa karıştıran bir atmosfer sunuyor.",
+   "by": "llm"
+  },
+  "406990": {
+   "score": 1,
+   "reason": "Film bir bilim‑kurgu ve gizem unsurları taşısa da, 'kafa karıştıran, zihin bükücü' beklentisini tam olarak karşılamaktan ziyade kısmen tatmin ediyor.",
+   "by": "llm"
+  },
+  "51876": {
+   "score": 2,
+   "reason": "Limitless'in zihin gücünü artıran konsepti ve sürükleyici bilim‑kurgu/gerilim atmosferi, kullanıcı isteğindeki 'kafa karıştıran, zihin bükücü' beklentisini karşılıyor.",
+   "by": "llm"
+  },
+  "1954": {
+   "score": 2,
+   "reason": "The Butterfly Effect is a sci‑fi thriller about time‑travel and reality‑altering consequences, fitting the request for a mind‑bending, confusing film.",
+   "by": "llm"
+  },
+  "282963": {
+   "score": 1,
+   "reason": "Film bilim kurgu ve gizem içeriyor ancak 'kafa karıştıran, zihin bükücü' teması güçlü bir şekilde yansıtılmıyor.",
+   "by": "llm"
+  },
+  "1018": {
+   "score": 2,
+   "reason": "Mulholland Drive, bir David Lynch filmi olarak karmaşık ve zihin bükücü bir atmosfer sunar, kullanıcı isteğine tam olarak uyar.",
+   "by": "llm"
+  },
+  "575604": {
+   "score": 2,
+   "reason": "Film, zaman yolculuğu ve kaderi değiştirme temalarıyla zihin bükücü bir atmosfer sunuyor, kullanıcı isteğine tam uyuyor.",
+   "by": "llm"
+  },
+  "45612": {
+   "score": 2,
+   "reason": "Source Code's time‑loop premise and reality‑twisting plot make it a mind‑bending film, fully matching the user's request.",
+   "by": "llm"
+  },
+  "1236153": {
+   "score": 2,
+   "reason": "Film bir bilim kurgu, gerilim ve gizem karışımı olduğu için zihin bükücü ve kafa karıştırıcı bir atmosfer sunar.",
+   "by": "llm"
+  },
+  "335209": {
+   "score": 0,
+   "reason": "Film, bilim kurgu ve macera unsurları taşısa da, 'kafa karıştıran, zihin bükücü' bir atmosfer sunmadığı için isteğe uymuyor.",
+   "by": "llm"
+  },
+  "4174": {
+   "score": 1,
+   "reason": "Film bir psikolojik gerilim olduğu için kısmen kafa karıştırıcı olsa da, yoğun zihin bükücü unsurları diğer örnekler kadar belirgin değil.",
+   "by": "llm"
+  },
+  "9741": {
+   "score": 1,
+   "reason": "Unbreakable bir gizem ve thriller olsa da, genellikle 'kafa karıştıran, zihin bükücü' olarak tanımlanan yoğun sürreal ya da çok katmanlı yapıya sahip değildir.",
+   "by": "llm"
+  },
+  "615173": {
+   "score": 1,
+   "reason": "Film aksiyon, gizem ve bilim kurgu unsurları taşısa da, özetinden net bir zihin bükücü, kafa karıştıran unsur çıkmadığı için sadece kısmen uyuyor.",
+   "by": "llm"
+  },
+  "37686": {
+   "score": 0,
+   "reason": "Super 8 bir gizem ve bilim‑kurgu filmi olsa da, genellikle kafa karıştırıcı ya da zihin bükücü olarak tanımlanmaz.",
+   "by": "llm"
+  }
+ },
+ "D12": {
+  "539": {
+   "score": 0,
+   "reason": "Psycho birden fazla mekanda geçer, tek mekanda geçme şartını ihlal ediyor.",
+   "by": "llm"
+  },
+  "1621552": {
+   "score": 1,
+   "reason": "Tür kriterini karşılıyor ancak tek mekanda geçtiği doğrulanamıyor.",
+   "by": "llm"
+  },
+  "550": {
+   "score": 0,
+   "reason": "Film birden fazla mekanda geçiyor, tek mekanda olma şartını ihlal ediyor.",
+   "by": "llm"
+  },
+  "2832": {
+   "score": 2,
+   "reason": "Film hem Thriller türünde hem de tek bir otelde geçerek tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "155": {
+   "score": 0,
+   "reason": "Film tek mekanda geçmediği için sert kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "123109": {
+   "score": 0,
+   "reason": "Film tek mekanda geçmiyor, bu yüzden sert kritere uymuyor.",
+   "by": "llm"
+  },
+  "680": {
+   "score": 0,
+   "reason": "Film çoklu mekanlarda geçiyor, tek mekanda geçme şartını ihlal ediyor.",
+   "by": "llm"
+  },
+  "11482": {
+   "score": 1,
+   "reason": "Film thriller türünde ama tek mekanda geçip geçmediği kesin değil, çoğunlukla bir dairede olsa da dış sahneler de var.",
+   "by": "llm"
+  },
+  "496243": {
+   "score": 0,
+   "reason": "Film birden fazla mekanda geçiyor, tek mekanda geçme şartını karşılamıyor.",
+   "by": "llm"
+  },
+  "12493": {
+   "score": 0,
+   "reason": "Film birden fazla mekanda geçiyor, tek mekanda olma sert kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "567": {
+   "score": 2,
+   "reason": "Film thriller türünde ve neredeyse tamamen Jeff'in dairesinde geçerek tek mekanda gerçekleşen gerilim kriterini karşılıyor.",
+   "by": "llm"
+  },
+  "112949": {
+   "score": 0,
+   "reason": "Film tek mekanda geçmiyor, bu sert kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "807": {
+   "score": 0,
+   "reason": "Film bir thriller olsa da tek mekanda geçmedi, bu sert kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "244786": {
+   "score": 0,
+   "reason": "Whiplash birden fazla mekanda geçiyor, tek mekanda geçme şartını ihlal ediyor.",
+   "by": "llm"
+  },
+  "274": {
+   "score": 0,
+   "reason": "Film birden fazla mekanda geçiyor, tek mekanda olma şartını ihlal ediyor.",
+   "by": "llm"
+  },
+  "10294": {
+   "score": 1,
+   "reason": "Film thriller türünü karşılıyor ancak tek mekanda geçtiği kesin olarak doğrulanamıyor.",
+   "by": "llm"
+  }
+ },
+ "D13": {
+  "27205": {
+   "score": 2,
+   "reason": "Film hem Science Fiction türünde hem de 8.4 puan alarak tüm sayısal kriterleri karşılıyor ve konu olarak da istenen bilim kurgu atmosferine uygun.",
+   "by": "llm"
+  },
+  "569094": {
+   "score": 2,
+   "reason": "Film hem 8.4 puanla minimum 8 puan kriterini karşılıyor hem de Science Fiction türüne dahil, istenen temaya uyuyor.",
+   "by": "llm"
+  },
+  "105": {
+   "score": 2,
+   "reason": "Film hem Science Fiction türünde hem de 8.0 üzeri puana sahip, istenen kriterleri tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "18491": {
+   "score": 2,
+   "reason": "Film hem Science Fiction türünde hem de 8.3 puanla minimum 8 puan gereksinimini karşılıyor.",
+   "by": "llm"
+  },
+  "603": {
+   "score": 2,
+   "reason": "The Matrix meets the Science Fiction genre requirement and exceeds the minimum 8 rating, aligning well with the requested criteria.",
+   "by": "llm"
+  },
+  "324857": {
+   "score": 2,
+   "reason": "Film hem Science Fiction türünde hem de 8.0 üzeri puana sahip, tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "157336": {
+   "score": 2,
+   "reason": "Film hem Science Fiction türünü içeriyor hem de 8.5 puanla minimum 8 puan gereksinimini karşılıyor.",
+   "by": "llm"
+  },
+  "1124": {
+   "score": 2,
+   "reason": "Film hem Science Fiction türünde hem de 8.2 puanla minimum puanı karşılıyor, istenen kriterlere tam uyuyor.",
+   "by": "llm"
+  },
+  "299534": {
+   "score": 2,
+   "reason": "Avengers: Endgame 8.2 puanıyla Science Fiction türünü içerdiği ve istenen 8 puan üzeri kriterini karşıladığı için tam uyum sağlıyor.",
+   "by": "llm"
+  },
+  "1184918": {
+   "score": 2,
+   "reason": "Film hem Science Fiction türünde hem de 8.3 puanla minimum puan gereksinimini karşılıyor.",
+   "by": "llm"
+  },
+  "1891": {
+   "score": 2,
+   "reason": "Film hem Science Fiction türünde hem de 8.4 puanla 8 puan üzeri gereksinimini karşılıyor.",
+   "by": "llm"
+  },
+  "62": {
+   "score": 2,
+   "reason": "Film hem Science Fiction türünde hem de 8.0 puanla minimum puan kriterini karşılıyor.",
+   "by": "llm"
+  },
+  "348": {
+   "score": 2,
+   "reason": "Film hem Science Fiction türünü içeriyor hem de 8.2 puanla minimum 8 puan gereksinimini karşılıyor.",
+   "by": "llm"
+  },
+  "687163": {
+   "score": 2,
+   "reason": "Film hem Science Fiction türünde hem de 8.6 puanla minimum 8 puan kriterini karşılıyor.",
+   "by": "llm"
+  },
+  "299536": {
+   "score": 2,
+   "reason": "Film hem Science Fiction türünde hem de 8.2 puanla istenen puan eşiğini karşılıyor.",
+   "by": "llm"
+  }
+ },
+ "D14": {
+  "15544": {
+   "score": 2,
+   "reason": "Film hem Comedy türünde hem de puanı 5'in altında, tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "1229047": {
+   "score": 0,
+   "reason": "Film puanı 5.0 olduğu için istenen '5'in altında' puan kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "87818": {
+   "score": 2,
+   "reason": "Film Comedy türünde ve puanı 4.7 ile 5'in altında, tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "880150": {
+   "score": 0,
+   "reason": "Film puanı 5.0 olduğu için istenen '5'in altında' puan kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "657293": {
+   "score": 0,
+   "reason": "Film puanı 5.0 olduğu için istenen '5'in altında' puan kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "456756": {
+   "score": 0,
+   "reason": "Film puanı 5.0 olduğu için istenen '5'in altında' puan kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "532893": {
+   "score": 0,
+   "reason": "Film puanı 5.0 olduğu için istenen '5'in altında' puan kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "965489": {
+   "score": 0,
+   "reason": "Film puanı 5.0 olduğu için istenen '5'in altında' puan kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "517307": {
+   "score": 0,
+   "reason": "Film puanı 5.0 olduğu için istenen '5'in altında' puan kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "680653": {
+   "score": 0,
+   "reason": "Film puanı 5.0 olduğu için istenen '5'in altında' kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "180853": {
+   "score": 2,
+   "reason": "Film hem Comedy türünde hem de puanı 5'in altında, tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "131304": {
+   "score": 2,
+   "reason": "Film hem Comedy türünde hem de 5'in altında puana (3.8) sahip, istenen kriterleri tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "582732": {
+   "score": 0,
+   "reason": "Film puanı 5.0 olduğu için 'puanı 5'in altında' kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "553147": {
+   "score": 2,
+   "reason": "Film Comedy türünde ve puanı 4.6 ile 5'in altında, tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "1017829": {
+   "score": 0,
+   "reason": "Film puanı 5.0 olduğu için 5'in altında değil ve kriteri ihlal ediyor.",
+   "by": "llm"
+  },
+  "572026": {
+   "score": 0,
+   "reason": "Film puanı 5.0 olduğu için istenen 'puanı 5'in altında' kriterini ihlal ediyor.",
+   "by": "llm"
+  }
+ },
+ "D15": {
+  "992": {
+   "score": 2,
+   "reason": "Film 1924 yapımı, istenen 1920-1929 aralığına tam uyuyor ve dönem temasıyla istekle örtüşüyor.",
+   "by": "llm"
+  },
+  "780": {
+   "score": 2,
+   "reason": "Film 1928 yapımı, istenen 1920'ler aralığına ve yıl kriterlerine tamamen uyuyor.",
+   "by": "llm"
+  },
+  "10728": {
+   "score": 2,
+   "reason": "Film 1926 yılı içinde ve 1920'lerden bir film isteğine tam uyuyor.",
+   "by": "llm"
+  },
+  "19": {
+   "score": 2,
+   "reason": "Metropolis 1927 yılı içinde ve 1920'lerden bir film isteğini tam olarak karşılıyor.",
+   "by": "llm"
+  },
+  "234": {
+   "score": 2,
+   "reason": "Film 1920 yapımı, istenen yıl aralığına tam uyuyor ve 1920'lerden bir öneri talebine uygun.",
+   "by": "llm"
+  },
+  "10098": {
+   "score": 2,
+   "reason": "Film 1921 yapımı, istenen 1920'ler aralığına ve konu/atmosfer beklentisine tam uyuyor.",
+   "by": "llm"
+  },
+  "631": {
+   "score": 2,
+   "reason": "Film 1927 yılında, istenen 1920-1929 aralığına ve 1920'lerden bir film isteğine tam uyuyor.",
+   "by": "llm"
+  },
+  "26317": {
+   "score": 2,
+   "reason": "Film 1929 yılı içinde ve istenen 1920'ler dönemine tam uyuyor.",
+   "by": "llm"
+  },
+  "28978": {
+   "score": 2,
+   "reason": "The Circus 1928 yılı içinde, istenen 1920-1929 aralığını karşılıyor ve 1920'ler sinemasına uygun bir konu sunuyor.",
+   "by": "llm"
+  },
+  "31411": {
+   "score": 2,
+   "reason": "Film 1928 yapımı, istenen 1920'ler aralığına tam uyuyor.",
+   "by": "llm"
+  },
+  "23282": {
+   "score": 2,
+   "reason": "Film 1920 yılında ve istenen 1920-1929 aralığını karşılıyor, ayrıca 1920'lerden bir film önerisi talebine uygun.",
+   "by": "llm"
+  },
+  "643": {
+   "score": 2,
+   "reason": "Film 1925 yılında, istenen 1920-1929 aralığına ve dönem isteğine tam uyuyor.",
+   "by": "llm"
+  },
+  "42536": {
+   "score": 2,
+   "reason": "Film 1927 yapımı, istenen 1920'ler aralığına tam uyuyor.",
+   "by": "llm"
+  },
+  "962": {
+   "score": 2,
+   "reason": "Film 1925 yapımı, istenen 1920-1929 aralığına tam uyuyor.",
+   "by": "llm"
+  },
+  "961": {
+   "score": 2,
+   "reason": "Film 1926 yılı içinde ve istenen 1920'ler dönemine tam uyuyor.",
+   "by": "llm"
+  }
+ },
+ "D16": {
+  "40096": {
+   "score": 1,
+   "reason": "Yıl ve drama türü kriterlerini karşılıyor, ancak film ağırlıklı olarak komedi ve fantastik unsurlar içerdiği için istenen 'en iyi dram' atmosferine tam olarak uymuyor.",
+   "by": "llm"
+  },
+  "17422": {
+   "score": 2,
+   "reason": "Film, drama türünde, 2006 yılı içinde ve konusuyla 2000'lerdeki en iyi dramlar isteğine uyuyor.",
+   "by": "llm"
+  },
+  "641": {
+   "score": 2,
+   "reason": "Film, 2000 yapımı drama türünde ve belirtilen 2000-2009 aralığında, yüksek puanıyla istenen kriterleri tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "2355": {
+   "score": 2,
+   "reason": "Film hem drama türünde, 2000-2009 yılları arasında ve konusuyla 2000'lerdeki en iyi dramlar isteğine tam uyuyor.",
+   "by": "llm"
+  },
+  "98": {
+   "score": 2,
+   "reason": "Film 2000 yılında, Drama türünde ve istenen döneme ve türe tam uyuyor.",
+   "by": "llm"
+  },
+  "6023": {
+   "score": 2,
+   "reason": "Film drama türünde, 2007 yılı içinde ve istenen kriterleri tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "1124": {
+   "score": 1,
+   "reason": "Yıl ve drama türü kriterlerini karşılıyor ancak film, büyü ve gizem temasıyla tipik bir drama atmosferine tam olarak uymuyor.",
+   "by": "llm"
+  },
+  "423": {
+   "score": 2,
+   "reason": "Film 2002 yılında, drama türünde ve istenen yıllar içinde, ayrıca dramatik bir konuya sahip, bu yüzden tüm kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "12405": {
+   "score": 2,
+   "reason": "Film 2008 yılında, drama türünde ve 2000'ler içinde en beğenilen dramalar arasında yer alıyor.",
+   "by": "llm"
+  },
+  "1422": {
+   "score": 2,
+   "reason": "The Departed is a 2006 drama (within 2000‑2009) and fits the requested genre and period.",
+   "by": "llm"
+  },
+  "38": {
+   "score": 2,
+   "reason": "Film 2004 tarihli, Drama türünde ve hem yıl hem tür kriterlerini tam karşılayıp, dramatik aşk ve hafıza temalı atmosferiyle istenen '2000'lerdeki en iyi dramlar' beklentisine uygun.",
+   "by": "llm"
+  },
+  "16869": {
+   "score": 1,
+   "reason": "Yıl ve drama türü kriterlerini karşılıyor, ancak film daha çok savaş ve gerilim atmosferi taşıdığından istenen 'en iyi dramlar' temasına tam olarak uymuyor.",
+   "by": "llm"
+  },
+  "843": {
+   "score": 2,
+   "reason": "Film hem 2000 yılı içinde hem Drama türünde ve yüksek puanlı, tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "598": {
+   "score": 2,
+   "reason": "Film drama türünde, 2002 yapımı ve yüksek puanlı, istenen 2000-2009 aralığına ve drama kriterine tam uyuyor.",
+   "by": "llm"
+  },
+  "20941": {
+   "score": 2,
+   "reason": "Film 2005 yapımı, Drama türünde ve yüksek puanı (8.2) ile 2000-2009 arası en iyi dramlar kriterlerini tamamen karşılıyor.",
+   "by": "llm"
+  }
+ },
+ "D17": {
+  "184374": {
+   "score": 2,
+   "reason": "Film 2013, War türünde ve istenen yıl sınırını karşılıyor.",
+   "by": "llm"
+  },
+  "515001": {
+   "score": 1,
+   "reason": "Yıl ve tür kriterlerini karşılıyor ancak film komedi ağırlıklı olduğu için tam bir savaş filmi atmosferi sağlamıyor.",
+   "by": "llm"
+  },
+  "1244531": {
+   "score": 2,
+   "reason": "Film 2025 yılında çıkmış ve War türünü içeriyor, kullanıcı isteğiyle tam uyumlu.",
+   "by": "llm"
+  },
+  "324786": {
+   "score": 2,
+   "reason": "Film 2016 yılında çıkmış, War türünde ve savaş temalı bir konuya sahip, tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "576017": {
+   "score": 2,
+   "reason": "Film 2019 yılı ve War türünü içeriyor, istenen kriterleri tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "205596": {
+   "score": 1,
+   "reason": "Yıl ve tür kriterlerini karşılıyor, ancak konu daha çok şifre çözme ve Turing'in hayatı üzerine, tipik bir savaş filmi atmosferiyle tam olarak örtüşmüyor.",
+   "by": "llm"
+  },
+  "354287": {
+   "score": 2,
+   "reason": "Film, 2017 yılı ve War türü istenen kriterleri tam karşılıyor.",
+   "by": "llm"
+  },
+  "378108": {
+   "score": 2,
+   "reason": "Film 2016 yılında çıkmış, War türünde ve savaş temalı olduğu için tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "530915": {
+   "score": 2,
+   "reason": "Film 2019 tarihli ve War türünde, istenen savaş temasıyla tam uyum sağlıyor.",
+   "by": "llm"
+  },
+  "472454": {
+   "score": 2,
+   "reason": "Film, 2017 yapımı ve War türünde, istenen tüm kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "882569": {
+   "score": 2,
+   "reason": "Film hem War türünü hem de 2010 sonrası yılı karşılıyor ve konu olarak da savaş teması taşıyor.",
+   "by": "llm"
+  },
+  "1076487": {
+   "score": 2,
+   "reason": "Film hem 2010 sonrası ve War türünde, hem de savaş temalı bir özet sunuyor.",
+   "by": "llm"
+  },
+  "1058616": {
+   "score": 2,
+   "reason": "Film 2013'ten sonra çıkmış ve War türüne sahip, istenen kriterleri tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "1241436": {
+   "score": 2,
+   "reason": "Film 2025 yılında çıkmış, War türünde ve özeti savaş temalı, tüm kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "553839": {
+   "score": 2,
+   "reason": "Film 2019 tarihli, War türünü içeriyor ve istenen savaş temasıyla uyumlu.",
+   "by": "llm"
+  }
+ },
+ "D18": {
+  "758803": {
+   "score": 2,
+   "reason": "Film hem horror türünü karşılıyor hem de az bilinen, kült bir atmosfere sahip, istenen kriterlere tam uyuyor.",
+   "by": "llm"
+  },
+  "1130276": {
+   "score": 1,
+   "reason": "Tür olarak horror uyuyor, ancak filmin az bilinen bir kült yapım olduğuna dair kesin bir kanıt yok.",
+   "by": "llm"
+  },
+  "539": {
+   "score": 0,
+   "reason": "Psycho çok bilinen bir klasik olduğu için 'az bilinen kült' kriterini ihlal ediyor.",
+   "by": "llm"
+  },
+  "25237": {
+   "score": 0,
+   "reason": "Film, 'Come and See', is a well‑known war drama with only a minor horror element, not fitting the request for an obscure cult horror.",
+   "by": "llm"
+  },
+  "463708": {
+   "score": 1,
+   "reason": "Film horror türünü içeriyor ancak kült ve az bilinen korku atmosferine uymuyor.",
+   "by": "llm"
+  },
+  "1150394": {
+   "score": 0,
+   "reason": "Film animasyon, komedi ve aile türlerinde olduğu ve yeni bir yapım olması, 'az bilinen kült korku' beklentisini karşılamıyor.",
+   "by": "llm"
+  },
+  "1444376": {
+   "score": 2,
+   "reason": "Film horror türünde, az bilinen ve yüksek puanlı bir yapım; konu ve atmosfer talebe tam uyuyor.",
+   "by": "llm"
+  },
+  "699718": {
+   "score": 2,
+   "reason": "Film hem korku türünde hem de az bilinen, kült bir yapım olduğu için tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "694": {
+   "score": 0,
+   "reason": "The Shining is a famous, mainstream horror classic, not an obscure cult film as requested.",
+   "by": "llm"
+  },
+  "250574": {
+   "score": 2,
+   "reason": "Creep is a horror film that is relatively obscure and has achieved cult status, fully matching the request.",
+   "by": "llm"
+  },
+  "298015": {
+   "score": 1,
+   "reason": "Film horror türünü içeriyor ve az bilinen, ancak komedi ve aile odaklı olduğu için tam olarak kült korku atmosferine uymuyor.",
+   "by": "llm"
+  },
+  "4488": {
+   "score": 0,
+   "reason": "Film popüler bir klasik olduğu için 'az bilinen kült' kriterini karşılamıyor.",
+   "by": "llm"
+  },
+  "393345": {
+   "score": 0,
+   "reason": "Film, tanınmış bir serinin parçası olduğu için 'az bilinen kült' beklentisini karşılamıyor.",
+   "by": "llm"
+  },
+  "836225": {
+   "score": 1,
+   "reason": "Film horror türünü karşılıyor ancak 'az bilinen kült' beklentisini tam olarak karşılamıyor.",
+   "by": "llm"
+  },
+  "667276": {
+   "score": 1,
+   "reason": "Film horror türünü içeriyor ancak korku atmosferi ve kült bir yapım özelliği taşımadığı için sadece kısmen uyuyor.",
+   "by": "llm"
+  },
+  "1450527": {
+   "score": 1,
+   "reason": "Film korku türünü karşılıyor ancak az bilinen kült bir yapım olduğu kesin değil.",
+   "by": "llm"
+  },
+  "92060": {
+   "score": 0,
+   "reason": "Michael Jackson'ın Thriller'ı çok bilinen bir pop kültür ikonu olduğu için 'az bilinen kült' bir korku filmi kriterini ihlal ediyor.",
+   "by": "llm"
+  }
+ },
+ "D19": {
+  "1601797": {
+   "score": 2,
+   "reason": "Film comedy türünde ve kullanıcıyı güldürecek bir içerik vaat ediyor, istenen kritere tam uyuyor.",
+   "by": "llm"
+  },
+  "13": {
+   "score": 1,
+   "reason": "Film komedi türünü içeriyor ancak ağırlıklı olarak drama ve romantik temalar taşıdığından istenen neşeli atmosferi tam olarak karşılamıyor.",
+   "by": "llm"
+  },
+  "1465563": {
+   "score": 1,
+   "reason": "Film komedi türünü içeriyor ancak özeti daha çok dramatik bir hikaye sunuyor, bu yüzden tam olarak güldürme beklentisini karşılamayabilir.",
+   "by": "llm"
+  },
+  "987032": {
+   "score": 1,
+   "reason": "Film includes Comedy genre but its drama‑focused plot may only partially fulfill the request for a laugh‑inducing movie.",
+   "by": "llm"
+  },
+  "77338": {
+   "score": 2,
+   "reason": "Film hem Comedy türünde hem de eğlenceli, neşeli bir atmosfer sunarak isteği tam karşılıyor.",
+   "by": "llm"
+  },
+  "529414": {
+   "score": 2,
+   "reason": "Film comedy türünde ve kullanıcıyı güldürmeyi hedefleyen bir stand‑up gösterisi olduğu için tüm kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "1227877": {
+   "score": 2,
+   "reason": "Film, Comedy türünde ve özetindeki hafif suç ve moda teması eğlenceli bir atmosfer sunarak isteği karşılıyor.",
+   "by": "llm"
+  },
+  "1632181": {
+   "score": 2,
+   "reason": "Film comedy türünde ve aldatma/rekabet temasıyla eğlenceli bir atmosfer sunarak isteği tam karşılıyor.",
+   "by": "llm"
+  },
+  "680": {
+   "score": 1,
+   "reason": "Film comedy türünü içeriyor ve puanı yüksek, ancak karanlık ve suç teması nedeniyle tam olarak istenen neşeli atmosferi sağlamıyor.",
+   "by": "llm"
+  },
+  "496243": {
+   "score": 1,
+   "reason": "Parasite includes Comedy genre, but its dark satire tone only partially matches the request for a light, laugh‑inducing film.",
+   "by": "llm"
+  },
+  "38365": {
+   "score": 2,
+   "reason": "Film is a comedy as requested and its premise is aimed at humor, matching the user's desire to be entertained.",
+   "by": "llm"
+  },
+  "460668": {
+   "score": 2,
+   "reason": "Film bir komedi olduğu için istenen türe tam uyuyor ve özetindeki mizahi konu, kullanıcıyı güldürme isteğine uygun.",
+   "by": "llm"
+  },
+  "520172": {
+   "score": 2,
+   "reason": "Film comedy türünde ve eğlenceli bir atmosfer sunarak kullanıcı isteğini karşılıyor.",
+   "by": "llm"
+  },
+  "1302151": {
+   "score": 2,
+   "reason": "Film Comedy türünde ve komik bir plan üzerine kurulu, kullanıcı isteğine tam uyuyor.",
+   "by": "llm"
+  },
+  "637": {
+   "score": 1,
+   "reason": "Film komedi türünde olsa da ağırlıklı dramatik ve trajik içeriği, kullanıcı isteği olan neşeli ve güldürücü atmosferle tam olarak örtüşmüyor.",
+   "by": "llm"
+  },
+  "19404": {
+   "score": 1,
+   "reason": "Film komedi türünü içeriyor ancak ağırlıklı olarak romantik drama olduğu için istenen 'gülme' atmosferine tam olarak uymuyor.",
+   "by": "llm"
+  },
+  "497828": {
+   "score": 1,
+   "reason": "Film komedi türünü içeriyor ancak karanlık ve eleştirel atmosferi, istenen neşeli ve rahatlatıcı komedi beklentisiyle tam olarak örtüşmüyor.",
+   "by": "llm"
+  },
+  "40996": {
+   "score": 2,
+   "reason": "Film is bir Comedy, yüksek puanlı ve komik bir hikayeye sahip, bu yüzden kullanıcı isteğine tam uyuyor.",
+   "by": "llm"
+  }
+ },
+ "D20": {
+  "494656": {
+   "score": 1,
+   "reason": "Film horror türünü içeriyor ancak animasyon ve aile teması, istenen korku atmosferiyle tam uyum sağlamıyor.",
+   "by": "llm"
+  },
+  "764": {
+   "score": 2,
+   "reason": "The Evil Dead (1983) is a horror film that fully matches the requested genre and fits the horror atmosphere.",
+   "by": "llm"
+  },
+  "539": {
+   "score": 2,
+   "reason": "Film hem horror türünü karşılıyor hem de korku atmosferine uygun, istenen kriterleri tamamen sağlıyor.",
+   "by": "llm"
+  },
+  "25237": {
+   "score": 1,
+   "reason": "Film horror türünü içeriyor ancak ana teması savaş/dramadır, tam bir korku atmosferi sağlamıyor.",
+   "by": "llm"
+  },
+  "1150394": {
+   "score": 1,
+   "reason": "Film horror türünü içeriyor ancak konusunun atmosferi istenen korku temasıyla uyumlu değil.",
+   "by": "llm"
+  },
+  "1091": {
+   "score": 2,
+   "reason": "The Thing (1982) is a horror film with a strong horror atmosphere, fully matching the requested genre.",
+   "by": "llm"
+  },
+  "24924": {
+   "score": 2,
+   "reason": "Film hem tür olarak Horror içeriyor hem de korku atmosferine uygun bir konuyla istekle tam uyum sağlıyor.",
+   "by": "llm"
+  },
+  "694": {
+   "score": 2,
+   "reason": "The Shining is a horror film that fully matches the requested genre and its chilling atmosphere aligns with the user's request.",
+   "by": "llm"
+  },
+  "1339713": {
+   "score": 2,
+   "reason": "Film hem istenen Horror türünü karşılıyor hem de karanlık, korkutucu temasıyla kullanıcı isteğine tam uyuyor.",
+   "by": "llm"
+  },
+  "297610": {
+   "score": 2,
+   "reason": "Film horror türünde ve kullanıcı isteğiyle uyumlu, istenen tür kriterini tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "646683": {
+   "score": 2,
+   "reason": "Film hem Horror türünü içeriyor hem de süpernatural korku temasıyla kullanıcı isteğine tam uyuyor.",
+   "by": "llm"
+  },
+  "92060": {
+   "score": 2,
+   "reason": "Film hem horror türünde hem de korku atmosferine sahip, istenen kritere tam uyuyor.",
+   "by": "llm"
+  },
+  "20701": {
+   "score": 2,
+   "reason": "Film hem Horror türünü içeriyor hem de özetindeki korku teması istenen atmosferle uyumlu.",
+   "by": "llm"
+  },
+  "667276": {
+   "score": 1,
+   "reason": "Film horror türünü içeriyor ancak aynı zamanda animation, comedy ve family gibi unsurlarla karışık olduğu için atmosferi tam olarak korku beklentisine uymuyor.",
+   "by": "llm"
+  },
+  "1375646": {
+   "score": 2,
+   "reason": "Film Horror türünde ve korku atmosferine uygun bir virüs ve dehşet teması sunuyor.",
+   "by": "llm"
+  },
+  "348": {
+   "score": 2,
+   "reason": "Alien, Horror ve Science Fiction türlerinde olduğu için istenen korku türü kriterini karşılıyor ve korku atmosferi sunuyor.",
+   "by": "llm"
+  },
+  "1130276": {
+   "score": 2,
+   "reason": "İstenen türde ve korku temalı, yüksek puanlı bir film.",
+   "by": "llm"
+  }
+ },
+ "D21": {
+  "72720": {
+   "score": 1,
+   "reason": "Film animasyon ve aile dostu, ancak özetten kesin bir 'feel‑good' atmosferi çıkmadığı için tam uyum sağlamıyor.",
+   "by": "llm"
+  },
+  "494407": {
+   "score": 2,
+   "reason": "Film animasyonlu, aile dostu ve pozitif bir atmosfer sunarak isteğe tam uyuyor.",
+   "by": "llm"
+  },
+  "8587": {
+   "score": 2,
+   "reason": "The Lion King is an animated family film with an uplifting ending, fitting the feel‑good request.",
+   "by": "llm"
+  },
+  "995133": {
+   "score": 2,
+   "reason": "The film is an animated, family-friendly movie with a heartwarming story, fitting the feel‑good request for the whole family.",
+   "by": "llm"
+  },
+  "1150394": {
+   "score": 1,
+   "reason": "Animasyon ve aile teması var ama korku unsuru, tam anlamıyla feel‑good bir atmosfer sağlamıyor.",
+   "by": "llm"
+  },
+  "15655": {
+   "score": 2,
+   "reason": "The Tigger Movie is an animated, family‑friendly comedy with a light, uplifting tone, perfectly fitting a feel‑good movie for the whole family.",
+   "by": "llm"
+  },
+  "1139087": {
+   "score": 2,
+   "reason": "Film animasyonlu, aile dostu ve neşeli bir atmosfer sunarak isteğe tam uyuyor.",
+   "by": "llm"
+  },
+  "129": {
+   "score": 1,
+   "reason": "Spirited Away is an animated family film, but its tone is more mysterious than purely feel‑good.",
+   "by": "llm"
+  },
+  "399106": {
+   "score": 2,
+   "reason": "Piper is a feel‑good animated family film that fits the request perfectly.",
+   "by": "llm"
+  },
+  "1084244": {
+   "score": 2,
+   "reason": "Toy Story 5 is an animated, family-friendly comedy that fits the feel‑good vibe requested.",
+   "by": "llm"
+  },
+  "1184918": {
+   "score": 2,
+   "reason": "Film animasyon, aile dostu ve özetindeki sıcak, hayvanlarla bağ kurma teması, kullanıcı isteği olan feel‑good aile filmi beklentisini tam karşılıyor.",
+   "by": "llm"
+  },
+  "667276": {
+   "score": 0,
+   "reason": "Film, korku unsurları ve karanlık temasıyla 'feel‑good' aile filmi beklentisini karşılamıyor.",
+   "by": "llm"
+  },
+  "250480": {
+   "score": 2,
+   "reason": "Film animasyon, aile dostu ve neşeli bir atmosfer sunarak kullanıcı isteğini tam olarak karşılıyor.",
+   "by": "llm"
+  },
+  "1007757": {
+   "score": 2,
+   "reason": "Film animasyonlu, aile dostu ve pozitif bir macera sunarak isteğe tam uyuyor.",
+   "by": "llm"
+  },
+  "641364": {
+   "score": 2,
+   "reason": "Film animasyon ve aile türünde, pozitif ve sıcak bir hikayeye sahip, kullanıcı isteğine tam uyuyor.",
+   "by": "llm"
+  },
+  "350499": {
+   "score": 2,
+   "reason": "Film animasyonlu, aile dostu ve genellikle pozitif bir atmosfer sunarak isteğe uygun.",
+   "by": "llm"
+  }
+ },
+ "D22": {
+  "878608": {
+   "score": 2,
+   "reason": "Film horror içermiyor, istenmeyen tür kriterini karşılıyor ve konu/atmosfer talebiyle uyumlu.",
+   "by": "llm"
+  },
+  "27205": {
+   "score": 2,
+   "reason": "Film, istenmeyen Horror türünden uzak ve korku öğeleri içermiyor, bu yüzden tüm kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "828": {
+   "score": 2,
+   "reason": "Film, istenmeyen Horror türünden uzak, sadece bilim kurgu, gerilim ve drama içerdiği için kullanıcı isteğini tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "569094": {
+   "score": 2,
+   "reason": "Filmde korku unsurları yok ve istenmeyen Horror türüyle çelişmiyor.",
+   "by": "llm"
+  },
+  "11548": {
+   "score": 2,
+   "reason": "Film, istenmeyen Horror türünden uzak ve korku öğeleri içermiyor, bu yüzden tüm kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "105": {
+   "score": 2,
+   "reason": "Film, istenmeyen Horror türünden uzak ve korku öğesi içermiyor, bu yüzden tüm kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "646380": {
+   "score": 2,
+   "reason": "Film, Horror türünde değil ve istenmeyen korku öğeleri içermiyor, bu yüzden tüm kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "18491": {
+   "score": 2,
+   "reason": "Film, istenmeyen Horror türünde değil ve kullanıcı isteğiyle uyumlu.",
+   "by": "llm"
+  },
+  "603": {
+   "score": 2,
+   "reason": "The Matrix is an Action/Science Fiction film with no horror elements, fully meeting the 'no horror' criterion.",
+   "by": "llm"
+  },
+  "324857": {
+   "score": 2,
+   "reason": "Filmde korku türü yok, istenmeyen Horror türü kriterini tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "157336": {
+   "score": 2,
+   "reason": "Film is Adventure/Drama/Science Fiction and contains no horror elements, fully meeting the 'no horror' criterion.",
+   "by": "llm"
+  },
+  "830": {
+   "score": 2,
+   "reason": "Film Horror türünde değil, istenmeyen korku öğeleri içermiyor ve tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "299534": {
+   "score": 2,
+   "reason": "Film horror türünde değil ve istenmeyen korku öğeleri içermiyor, bu yüzden tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "1184918": {
+   "score": 2,
+   "reason": "Filmde korku türü yok ve istenmeyen tür kriterini tamamen karşılıyor.",
+   "by": "llm"
+  },
+  "1891": {
+   "score": 2,
+   "reason": "Film, Horror türünde değil ve istenmeyen korku öğeleri içermiyor, bu yüzden tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "687163": {
+   "score": 2,
+   "reason": "Film is Science Fiction ve Adventure türünde, istenmeyen Horror türünden tamamen uzak, istekle uyumlu.",
+   "by": "llm"
+  }
+ },
+ "D23": {
+  "13": {
+   "score": 2,
+   "reason": "Film 1994 yılıyla 1990-1999 aralığını tam karşılıyor.",
+   "by": "llm"
+  },
+  "2898": {
+   "score": 2,
+   "reason": "Film 1997 yılı içinde ve tüm belirtilen yıl aralığı kriterlerini karşılıyor.",
+   "by": "llm"
+  },
+  "10806": {
+   "score": 2,
+   "reason": "Film 1997 yılında, istenen 1990-1999 aralığına tam uyuyor.",
+   "by": "llm"
+  },
+  "862": {
+   "score": 2,
+   "reason": "Film 1995 yılında çekilmiş, 1990-1999 aralığına tam uyuyor.",
+   "by": "llm"
+  },
+  "115": {
+   "score": 2,
+   "reason": "Film 1998 yılı içinde, tüm yıl kriterlerini karşılıyor.",
+   "by": "llm"
+  },
+  "680": {
+   "score": 2,
+   "reason": "Film 1994 yılında, istenen 1990-1999 aralığına uyuyor.",
+   "by": "llm"
+  },
+  "100": {
+   "score": 2,
+   "reason": "Film 1998 yılında, istenen 1990-1999 aralığına tam uyuyor.",
+   "by": "llm"
+  },
+  "1968": {
+   "score": 2,
+   "reason": "Film 1997 yılı içinde, tüm yıl kriterlerini karşılıyor.",
+   "by": "llm"
+  },
+  "38286": {
+   "score": 2,
+   "reason": "Film 1997 yapımı, istenen 1990-1999 aralığına tam uyuyor.",
+   "by": "llm"
+  },
+  "38288": {
+   "score": 2,
+   "reason": "Film 1996 yılı içinde ve istenen 90'lar dönemine uygun.",
+   "by": "llm"
+  },
+  "37165": {
+   "score": 2,
+   "reason": "Film 1998 yılında, istenen 1990-1999 aralığına tam uyuyor.",
+   "by": "llm"
+  },
+  "4104": {
+   "score": 2,
+   "reason": "Film 1993 tarihli, istenen 1990-1999 aralığına tam uyuyor ve 90'lar temasıyla istekle örtüşüyor.",
+   "by": "llm"
+  },
+  "11104": {
+   "score": 2,
+   "reason": "Film 1994 yılında çekilmiş, istenen 1990-1999 aralığına tam uyuyor.",
+   "by": "llm"
+  },
+  "637": {
+   "score": 2,
+   "reason": "Film 1997 yılı içinde, istenen 90'lar dönemine tam uyuyor.",
+   "by": "llm"
+  },
+  "19404": {
+   "score": 2,
+   "reason": "Film 1995 yapımı, istenen 1990-1999 aralığına uyuyor ve kullanıcı isteğiyle örtüşüyor.",
+   "by": "llm"
+  }
+ },
+ "D31": {
+  "1601797": {
+   "score": 2,
+   "reason": "Film Comedy türünde ve komedi temalı bir hikaye sunduğu için isteğe tam uyuyor.",
+   "by": "llm"
+  },
+  "13": {
+   "score": 1,
+   "reason": "Film komedi türünü içeriyor ancak drama ve romantik unsurlarıyla tam bir komedi atmosferi sağlamıyor.",
+   "by": "llm"
+  },
+  "1465563": {
+   "score": 2,
+   "reason": "Film is listed as Comedy (and meets the requested genre) and its premise can be enjoyed as a comedic story.",
+   "by": "llm"
+  },
+  "987032": {
+   "score": 2,
+   "reason": "Film hem Comedy türünü içeriyor hem de hafif, eğlenceli bir konuya sahip, bu yüzden kullanıcı isteğiyle uyumlu.",
+   "by": "llm"
+  },
+  "15544": {
+   "score": 2,
+   "reason": "Film is bir comedy ve kullanıcı isteği olan komedi türüne tam olarak uyuyor.",
+   "by": "llm"
+  },
+  "77338": {
+   "score": 2,
+   "reason": "Film, Comedy türünde ve komedi atmosferine sahip, istenen tür kriterini tam karşılıyor.",
+   "by": "llm"
+  },
+  "43923": {
+   "score": 1,
+   "reason": "Film komedi türünü içeriyor ancak konusunun ciddi ve dramatik olması istenen komedi atmosferine tam olarak uymuyor.",
+   "by": "llm"
+  },
+  "529414": {
+   "score": 2,
+   "reason": "Film is a Comedy (desired genre), released in 2018 with a high rating, and its comedic stand‑up premise matches the user’s request.",
+   "by": "llm"
+  },
+  "1632181": {
+   "score": 2,
+   "reason": "Film, istenen Comedy türünü ve uygun konuyu karşılıyor.",
+   "by": "llm"
+  },
+  "680": {
+   "score": 2,
+   "reason": "Film, Comedy türünü içeriyor ve komedi unsurlarıyla kullanıcı isteğine uygun.",
+   "by": "llm"
+  },
+  "496243": {
+   "score": 1,
+   "reason": "Parasite includes Comedy genre but its tone is dark thriller/drama, so only partially fits a pure comedy request.",
+   "by": "llm"
+  },
+  "553147": {
+   "score": 2,
+   "reason": "Film is a comedy as requested and its plot aligns with a comedic premise, meeting all criteria.",
+   "by": "llm"
+  },
+  "262": {
+   "score": 2,
+   "reason": "Film hem Comedy türünde hem de komedi temalı bir hikâye sunduğu için tüm açık kriterleri karşılıyor.",
+   "by": "llm"
+  },
+  "1302151": {
+   "score": 2,
+   "reason": "Film is a Comedy as requested and its plot fits the comedic premise.",
+   "by": "llm"
+  },
+  "637": {
+   "score": 1,
+   "reason": "Film komedi türünü içeriyor ancak konusunun ağırlığı ve atmosferi istenen hafif komedi beklentisini tam olarak karşılamıyor.",
+   "by": "llm"
+  },
+  "19404": {
+   "score": 1,
+   "reason": "Film komedi türünü içeriyor ancak ana teması romantik drama olduğu için tam olarak istenen komedi atmosferine tam uymuyor.",
+   "by": "llm"
+  },
+  "57214": {
+   "score": 2,
+   "reason": "Film, Comedy türünde ve kullanıcı isteği olan komedi önerisine tam olarak uyuyor.",
+   "by": "llm"
+  },
+  "1273221": {
+   "score": 2,
+   "reason": "Film is listed as Comedy, matching the requested genre and its comedic parody tone fits the user's request.",
+   "by": "llm"
+  },
+  "40996": {
+   "score": 2,
+   "reason": "Film is a comedy as requested and fits the genre criterion fully.",
+   "by": "llm"
+  }
+ }
+}

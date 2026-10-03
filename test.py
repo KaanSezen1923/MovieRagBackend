@@ -13,7 +13,6 @@ from shared import ctx
 # 10 Kolay, 10 Orta, 30 Zor olmak üzere toplam 50 test sorusu
 sorular = [
     # ---------------- KOLAY SEVİYE (10 Soru) ----------------
-    # Sistemin temel graf (Neo4j) ve API (TMDB) araçlarını doğrudan test eder.
     "Bilim kurgu filmi öner.",
     "Christopher Nolan'ın yönettiği filmler neler?",
     "Bana bir komedi filmi bul.",
@@ -26,7 +25,6 @@ sorular = [
     "Tarihi belgesel arıyorum, ne izleyebilirim?",
 
     # ---------------- ORTA SEVİYE (10 Soru) ----------------
-    # Niyet (intent) analizini, ruh hali (mood) eşleştirmesini ve filtre kombinasyonlarını test eder.
     "Bugün canım çok sıkkın, beni hemen neşelendirecek ve çok düşündürmeyecek bir komedi öner.",
     "İçinde zombiler olan ama kesinlikle korku türünde olmayan, daha çok komedi ağırlıklı bir film var mı?",
     "Sadece 8 puanın üzerindeki Leonardo DiCaprio'nun gizem veya gerilim filmlerini listele.",
@@ -39,8 +37,6 @@ sorular = [
     "Gerçek olaylara dayanan, 2. Dünya Savaşı'nda geçen ve IMDB puanı 7'den yüksek savaş dramaları.",
 
     # ---------------- ZOR SEVİYE (30 Soru) ----------------
-    # 'search_movies_semantically' vektör aramasını, Neo4j fallback mekanizmasını, soyut konseptleri, 
-    # persona çakışmalarını ve 'avoid' (kaçınma) parametresindeki zorlu sınırları test eder.
     "Varoluşsal bir kriz yaşayan ama aynı zamanda seyirciyi kahkahalara boğan absürt bir kara komedi arıyorum.",
     "İzledikten sonra günlerce tavanı izletip hayatı sorgulatacak, İskandinav sinemasına benzeyen soğuk atmosferli felsefi bir film.",
     "İçinde zamanda yolculuk olsun ama kelebek etkisi yüzünden her şeyin mahvolduğu ve mutlu sonla bitmeyen karanlık bir film.",
@@ -73,9 +69,14 @@ sorular = [
     "Sadece 1800'lü yıllarda, denizin ortasındaki bir fenerde geçen, denizci mitolojisiyle insanın aklını yitirmesini anlatan siyah beyaz bir korku."
 ]
 
+# Yapılandırmalar
+MAX_RETRIES = 3           # Bir soruyu en fazla kaç kez deneyeceği
+RETRY_DELAY_SECONDS = 10  # Hata aldığında bir sonraki deneme için kaç saniye bekleyeceği
+SUCCESS_DELAY_SECONDS = 5 # Başarılı bir sorgudan sonraki standart bekleme süresi
+
 async def run_tests():
     test_sonuclari = []
-    output_file = "test_raporu_client_nano3.json"
+    output_file = "test_raporu_client_nemotron-3.json"
     
     server_params = StdioServerParameters(
         command=sys.executable,
@@ -83,7 +84,7 @@ async def run_tests():
         env=os.environ.copy()
     )
 
-    print(f"🎬 MCP Sunucusu başlatılıyor ve {len(sorular)} test sorusu client mimarisi ile koşturuluyor...\n")
+    print(f"🎬 MCP Sunucusu başlatılıyor ve {len(sorular)} test sorusu koşturuluyor...\n")
 
     async with AsyncExitStack() as stack:
         stdio_transport = await stack.enter_async_context(stdio_client(server_params))
@@ -96,7 +97,7 @@ async def run_tests():
         tools = await get_ollama_tools(session)
 
         for index, soru in enumerate(sorular, 1):
-            print(f"[{index}/{len(sorular)}] Test ediliyor: {soru}")
+            print(f"\n[{index}/{len(sorular)}] Test ediliyor: {soru}")
 
             initial_state = {
                 "prompt": soru,
@@ -111,51 +112,68 @@ async def run_tests():
             }
 
             start_time = time.time()
-            kategori = None
-            arama_degeri = soru
-            calisan_dugumler = []
-            db_cevabi = []
-            final_answer = None
+            basarili = False
 
-            try:
-                # LangGraph asenkron akışı üzerinden düğüm durumlarını topla
-                async for event in app.astream(initial_state):
-                    for node_name, node_state in event.items():
-                        calisan_dugumler.append(node_name)
+            # Yeniden deneme döngüsü (Retry Loop)
+            for attempt in range(1, MAX_RETRIES + 1):
+                kategori = None
+                arama_degeri = soru
+                calisan_dugumler = []
+                db_cevabi = []
+                final_answer = None
 
-                        if node_name == "intent_analyzer":
-                            kategori = node_state.get("intent")
-                        elif node_name == "recommendation_engine":
-                            final_answer = node_state.get("final_output")
-                            db_cevabi = node_state.get("tool_results", [])
-                        elif node_name == "general_chatter":
-                            final_answer = node_state.get("final_output")
+                try:
+                    # LangGraph asenkron akışı üzerinden düğüm durumlarını topla
+                    async for event in app.astream(initial_state):
+                        for node_name, node_state in event.items():
+                            calisan_dugumler.append(node_name)
 
-                end_time = time.time()
-                gecen_sure = round(end_time - start_time, 2)
+                            if node_name == "intent_analyzer":
+                                kategori = node_state.get("intent")
+                            elif node_name == "recommendation_engine":
+                                final_answer = node_state.get("final_output")
+                                db_cevabi = node_state.get("tool_results", [])
+                            elif node_name == "general_chatter":
+                                final_answer = node_state.get("final_output")
 
-                test_sonuclari.append({
-                    "soru": soru,
-                    "tespit_edilen_kategori": kategori,
-                    "arama_degeri": arama_degeri,
-                    "calisan_dugumler": calisan_dugumler,
-                    "veritabani_cevabi": db_cevabi,
-                    "sistem_yaniti": final_answer,
-                    "yanit_suresi_saniye": gecen_sure
-                })
-                print(f"  -> Başarılı ({gecen_sure}s)")
+                    end_time = time.time()
+                    gecen_sure = round(end_time - start_time, 2)
 
-            except Exception as e:
-                print(f"  ❌ Hata oluştu: {str(e)}")
-                test_sonuclari.append({
-                    "soru": soru,
-                    "hata": str(e)
-                })
+                    test_sonuclari.append({
+                        "soru": soru,
+                        "tespit_edilen_kategori": kategori,
+                        "arama_degeri": arama_degeri,
+                        "calisan_dugumler": calisan_dugumler,
+                        "veritabani_cevabi": db_cevabi,
+                        "sistem_yaniti": final_answer,
+                        "yanit_suresi_saniye": gecen_sure,
+                        "kullanilan_deneme_sayisi": attempt
+                    })
+                    print(f"  ✅ Başarılı ({gecen_sure}s)")
+                    basarili = True
+                    break  # Başarılı olduğu için retry döngüsünden çık
+
+                except Exception as e:
+                    print(f"  ⚠️ Hata (Deneme {attempt}/{MAX_RETRIES}): {str(e)}")
+                    if attempt < MAX_RETRIES:
+                        print(f"     Sistem API'lerinin toparlanması için {RETRY_DELAY_SECONDS} saniye bekleniyor...")
+                        await asyncio.sleep(RETRY_DELAY_SECONDS)
+                    else:
+                        print(f"  ❌ Tüm {MAX_RETRIES} deneme başarısız oldu, soru atlanıyor.")
+                        test_sonuclari.append({
+                            "soru": soru,
+                            "hata": str(e),
+                            "kullanilan_deneme_sayisi": attempt
+                        })
+            
+            # API sağlayıcısını yormamak için başarılı sorulardan sonra varsayılan bekleme
+            if basarili and index < len(sorular):
+                await asyncio.sleep(SUCCESS_DELAY_SECONDS)
 
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(test_sonuclari, f, ensure_ascii=False, indent=4)
 
-    print(f"\n✅ Tüm testler tamamlandı! Sonuçlar '{output_file}' dosyasına kaydedildi.")
+    print(f"\n🎉 Tüm testler tamamlandı! Sonuçlar '{output_file}' dosyasına kaydedildi.")
 
 if __name__ == "__main__":
     asyncio.run(run_tests())

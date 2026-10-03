@@ -2,7 +2,7 @@ import os
 import sys
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
-from langchain_ollama import ChatOllama
+from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from typing import TypedDict, Optional
 from langgraph.graph import StateGraph, START, END
 import json 
@@ -35,7 +35,12 @@ if not password:
     sys.exit(1)
 
 recommender = MovieRecommender(uri, user, password, database)
-model = ChatOllama(model="gemma4:31b-cloud", temperature=0.8)
+MODEL_NAME = "nvidia/nemotron-3-ultra-550b-a55b"
+model = ChatNVIDIA(
+    model=MODEL_NAME,
+    api_key=os.getenv("NVIDIA_API_KEY"),
+    temperature=0.8
+)
 
 # ==========================================
 # ESNEK CYPHER SORGULARI (CONTAINS & toLower İle Optimize Edildi)

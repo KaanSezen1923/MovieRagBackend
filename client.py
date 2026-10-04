@@ -628,17 +628,22 @@ async def generate_user_suggestions(chat_history_text, favorites_text):
     
     return ["Bilim kurgu filmi öner", "Nolan filmi öner", "Tim Burton filmi öner"]
 
-
-async def generate_push_message(persona: str, fav_titles: list):
+async def generate_push_message(persona: str, fav_titles: list, excluded_titles: list = None):
     """Push bildirimi metni ve önerilen film adını üretir -> (message, movie_title)."""
-    system_prompt = """Sen heyecanlı ve samimi bir film danışmanısın.
-    Kullanıcının personasına ve favori filmlerine bakarak, ona izlemesi için *rastgele ve ilgi çekici* kısa bir bildirim mesajı (maksimum 150 karakter) yaz ve önerdiğin spesifik filmin tam adını belirt.
+    
+    # Daha önce önerilenleri prompt'a kural olarak ekliyoruz
+    excluded_str = ""
+    if excluded_titles:
+        excluded_str = f"\n\nÖNEMLİ KURAL: Şu filmleri DAHA ÖNCE ÖNERDİN, bunları KESİNLİKLE TEKRAR ÖNERME: {', '.join(excluded_titles[:15])}"
+
+    system_prompt = f"""Sen heyecanlı ve samimi bir film danışmanısın.
+    Kullanıcının personasına ve favori filmlerine bakarak, ona izlemesi için *rastgele ve ilgi çekici* kısa bir bildirim mesajı (maksimum 150 karakter) yaz ve önerdiğin spesifik filmin tam adını belirt.{excluded_str}
 
     Çıktıyı SADECE aşağıdaki JSON formatında ver, başka hiçbir metin veya açıklama ekleme:
-    {
+    {{
       "message": "En son Inception'ı sevmiştin, tam senin tarzına göre akıl bükücü bir film buldum: Shutter Island! Bakmak ister miydin?",
       "movie_title": "Shutter Island"
-    }
+    }}
     """
     user_msg = f"Persona: {persona}\nFavoriler: {', '.join(fav_titles)}"
     try:

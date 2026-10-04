@@ -701,7 +701,7 @@ async def chat(
     msg_count = await get_user_message_count(current_user.user_id)
     if msg_count > 0 and msg_count % 5 == 0:
         background_tasks.add_task(profile_update_task, current_user.user_id)
-         background_tasks.add_task(generate_and_save_recommendation_task, current_user.user_id)
+        background_tasks.add_task(generate_and_save_recommendation_task, current_user.user_id)
 
    
 

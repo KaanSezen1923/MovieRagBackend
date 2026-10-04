@@ -28,7 +28,7 @@ import wave
 import io
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from logger import logger
-import httpx
+
 
 load_dotenv()
 
@@ -226,6 +226,19 @@ async def save_chat_to_db(user_id: int, role: str, content: str, session_id: str
     except Exception as e:
        logger.error("DB Kayıt Hatası", exc_info=True)
 
+async def save_recommendation_to_db(user_id: int, movie_id: str, title: str, message: str):
+    try:
+        async with ctx.db_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO recommendations (user_id, movie_id, title, message) 
+                VALUES ($1, $2, $3, $4)
+                """,
+                user_id, movie_id, title, message
+            )
+    except Exception as e:
+        logger.error("Öneri veritabanına kaydedilemedi", exc_info=True)
+
 
 async def get_user_persona(user_id: int):
     async with ctx.db_pool.acquire() as conn:
@@ -330,6 +343,47 @@ async def profile_update_task(user_id: int):
         logger.info(f"Kullanıcı {user_id} için profil güncellendi.")
     except Exception as e:
         logger.error(f"Profilleme hatası (user_id={user_id})", exc_info=True)
+
+async def generate_and_save_recommendation_task(user_id: int):
+    try:
+        persona = await get_user_persona(user_id)
+        if not persona:
+            return
+            
+        favs_dict = await get_user_favorites(user_id)
+        favs = favs_dict.get("favorites", [])
+        fav_titles = [f["Film"] for f in favs][:5]
+        
+        # LLM'den mesaj ve film adı üret
+        res = await generate_push_message(persona, fav_titles)
+        if not res:
+            return
+            
+        message_text, movie_title = res
+        movie_id = None
+        
+        # Film adından detayları ve movie_id'yi bul
+        if movie_title:
+            card = await get_movie_card_by_title(movie_title)
+            if card:
+                movie_id = str(card.get("movie_id"))
+                movie_title = card.get("Film", movie_title)
+        
+        # Eğer LLM'in önerdiği spesifik film TMDB'den bulunamadıysa yedek mekanizma çalışsın
+        if not movie_id:
+            cards = await get_movies_for_push(user_id)
+            if cards:
+                card = cards[0]
+                movie_id = str(card.get("movie_id"))
+                movie_title = card.get("Film")
+        
+        # Veritabanına kaydet (is_pushed ve is_read varsayılan olarak false kaydedilecek)
+        if movie_id and movie_title and message_text:
+            await save_recommendation_to_db(user_id, movie_id, movie_title, message_text)
+            logger.info(f"Kullanıcı {user_id} için arka planda yeni öneri db'ye eklendi.")
+            
+    except Exception as e:
+        logger.error(f"Öneri oluşturma task'i hatası (user_id={user_id})", exc_info=True)
 
 @app.get("/chat/suggestions")
 async def get_chat_suggestions(current_user: CurrentUser = Depends(get_current_user)):
@@ -629,6 +683,8 @@ async def chat(
     if msg_count > 0 and msg_count % 5 == 0:
         background_tasks.add_task(profile_update_task, current_user.user_id)
 
+    background_tasks.add_task(generate_and_save_recommendation_task, current_user.user_id)
+
     return {"answer": answer, "tool_calls": tool_calls, "tool_results": tool_results}
 
 async def get_user_message_count(user_id: int):
@@ -687,89 +743,6 @@ async def get_favorite_ids(current_user: CurrentUser = Depends(get_current_user)
         )
     return {"favorite_ids": [r["movie_id"] for r in rows]}
 
-@app.get("/discover")
-async def discover_movies(category: str = Query(default="Popüler"), current_user: CurrentUser = Depends(get_current_user)):
-    # 1. Kategoriye göre TMDB uç noktasını (endpoint) belirle
-    tmdb_endpoints = {
-        "Popüler": "popular",
-        "Vizyondakiler": "now_playing",
-        "En Çok Oy Alanlar": "top_rated",
-        "Yakında": "upcoming"
-    }
-    endpoint = tmdb_endpoints.get(category, "popular")
-    auth_key = os.getenv("AUTH_KEY") # .env dosyanızdaki TMDB API anahtarını kullanıyoruz
-    
-    if not auth_key:
-        raise HTTPException(status_code=500, detail="TMDB AUTH_KEY yapılandırılmamış.")
-
-    headers = {
-        "Authorization": f"Bearer {auth_key}",
-        "accept": "application/json"
-    }
-    
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        try:
-            # 2. Filmlerin ana listesini çek
-            url = f"https://api.themoviedb.org/3/movie/{endpoint}?language=tr-TR&page=1"
-            response = await client.get(url, headers=headers)
-            
-            if response.status_code != 200:
-                raise HTTPException(status_code=500, detail="TMDB API'ye ulaşılamadı.")
-                
-            # Performansı yüksek tutmak için ilk 15 filmi alıyoruz
-            results = response.json().get("results", [])[:15]
-            
-            # 3. Yönetmen, Oyuncu ve Fragman bilgileri için paralel istekler at
-            async def fetch_movie_detail(movie_id):
-                detail_url = f"https://api.themoviedb.org/3/movie/{movie_id}?language=tr-TR&append_to_response=credits,videos"
-                res = await client.get(detail_url, headers=headers)
-                return res.json() if res.status_code == 200 else None
-
-            # Tüm filmlerin detaylarını aynı anda (paralel) çekiyoruz
-            details = await asyncio.gather(*[fetch_movie_detail(m["id"]) for m in results])
-            
-            movies = []
-            for d in details:
-                if not d:
-                    continue
-                
-                # Yönetmeni bul
-                crew = d.get("credits", {}).get("crew", [])
-                director = next((c["name"] for c in crew if c["job"] == "Director"), "Bilinmiyor")
-                
-                # Başrol oyuncularını bul (İlk 3 oyuncu)
-                cast_list = d.get("credits", {}).get("cast", [])
-                cast = ", ".join([c["name"] for c in cast_list[:3]]) if cast_list else "Bilinmiyor"
-                
-                # Youtube fragmanını bul
-                videos = d.get("videos", {}).get("results", [])
-                trailer = next((f"https://www.youtube.com/watch?v={v['key']}" for v in videos if v["site"] == "YouTube" and v["type"] == "Trailer"), "")
-                
-                # Türleri listele
-                genres = [g["name"] for g in d.get("genres", [])]
-                
-                poster_path = d.get("poster_path")
-                poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else "https://via.placeholder.com/500x750?text=No+Poster"
-                
-                # Mobil uygulamanın normalizeMovie fonksiyonuna uygun formata getiriyoruz
-                movies.append({
-                    "id": str(d.get("id")),
-                    "Film": d.get("title"), # "title" yerine "Film"
-                    "Özet": d.get("overview") or d.get("tagline") or "Özet bulunamadı.", # "overview" yerine "Özet"
-                    "Poster": poster_url, # "poster_url" yerine "Poster"
-                    "IMDb": str(round(d.get("vote_average", 0), 1)), # "imdb_rating" yerine "IMDb"
-                    "Director": director, # "director" yerine "Director"
-                    "Cast": cast, # "cast" yerine "Cast"
-                    "Türler": ", ".join(genres), # Dizi yerine virgüllü string olarak gönder
-                    "Fragman": trailer # "trailer_url" yerine "Fragman"
-                })
-                
-            return {"movies": movies}
-            
-        except httpx.RequestError as e:
-            logger.error(f"HTTP İstek Hatası: {e}")
-            raise HTTPException(status_code=500, detail="Film servisine bağlanılamadı.")
-
 @app.post("/update-push-token")
 async def update_push_token(req: TokenRequest, current_user: CurrentUser = Depends(get_current_user)):
     async with ctx.db_pool.acquire() as conn:
@@ -777,6 +750,26 @@ async def update_push_token(req: TokenRequest, current_user: CurrentUser = Depen
             "UPDATE users SET expo_push_token = $1 WHERE id = $2",
             req.token, current_user.user_id
         )
+    return {"status": "success"}
+
+@app.get("/recommendations")
+async def get_user_recommendations(current_user: CurrentUser = Depends(get_current_user)):
+    async with ctx.db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, title, message, created_at, is_read 
+            FROM recommendations 
+            WHERE user_id = $1 
+            ORDER BY created_at DESC LIMIT 50
+            """, 
+            current_user.user_id
+        )
+    return [{"id": r["id"], "title": r["title"], "body": r["message"], "date": r["created_at"], "is_read": r["is_read"]} for r in rows]
+
+@app.patch("/recommendations/read")
+async def mark_recommendations_read(current_user: CurrentUser = Depends(get_current_user)):
+    async with ctx.db_pool.acquire() as conn:
+        await conn.execute("UPDATE recommendations SET is_read = true WHERE user_id = $1", current_user.user_id)
     return {"status": "success"}
 
 def _parse_cards(result) -> list:
@@ -827,39 +820,48 @@ async def get_movie_card_by_title(title: str):
         return None
 
 async def send_random_notifications():
-    async with ctx.db_pool.acquire() as conn:
-        users = await conn.fetch(
-            "SELECT id, expo_push_token FROM users WHERE expo_push_token IS NOT NULL"
-        )
-
-    for row in users:
-        user_id, push_token = row["id"], row["expo_push_token"]
-        if random.random() >= 0.20:
-            continue
-        res = await generate_push_notification(user_id)
-        if not res:
-            continue
-
-        message_text, movie_title = res
-        recommended_movies = []
-        if movie_title:
-            card = await get_movie_card_by_title(movie_title)
-            if card:
-                recommended_movies = [card]
-        if not recommended_movies:
-            recommended_movies = await get_movies_for_push(user_id)
-
-        try:
-            msg = PushMessage(
-                to=push_token,
-                title="Senin İçin Bir Film Buldum 🍿",
-                body=message_text,
-                data={"type": "movie_recommendation", "movies": recommended_movies},
+    try:
+        async with ctx.db_pool.acquire() as conn:
+            # Sadece push edilmemiş olanları (is_pushed=false) ve push_token'ı olanları bul
+            records = await conn.fetch(
+                """
+                SELECT r.id, r.user_id, r.movie_id, r.title, r.message, u.expo_push_token 
+                FROM recommendations r
+                JOIN users u ON r.user_id = u.id
+                WHERE r.is_pushed = false AND u.expo_push_token IS NOT NULL
+                LIMIT 50
+                """
             )
-            await asyncio.to_thread(PushClient().publish, msg)  # senkron HTTP, event loop'u bloklamasın
-            logger.info(f"Bildirim gönderildi: {user_id}")
-        except Exception as e:
-            logger.error("Bildirim gönderme hatası", exc_info=True)
+            
+            if not records:
+                return
+
+            for row in records:
+                try:
+                    # Push bildirimine filmin görseli/detayları gitsin diye kart bilgisini alıyoruz
+                    card = await get_movie_card_by_title(row["title"])
+                    recommended_movies = [card] if card else []
+                    
+                    msg = PushMessage(
+                        to=row["expo_push_token"],
+                        title="Senin İçin Bir Film Buldum 🍿",
+                        body=row["message"],
+                        data={"type": "movie_recommendation", "movies": recommended_movies},
+                    )
+                    # Expo'ya gönder (Asenkron)
+                    await asyncio.to_thread(PushClient().publish, msg)
+                    
+                    # Gönderim başarılı olunca veritabanında "is_pushed = true" yapıyoruz
+                    await conn.execute(
+                        "UPDATE recommendations SET is_pushed = true WHERE id = $1",
+                        row["id"]
+                    )
+                    logger.info(f"Hazır bildirim gönderildi ve db güncellendi: {row['user_id']}")
+                except Exception as e:
+                    logger.error(f"Tekil bildirim gönderme hatası (id={row['id']})", exc_info=True)
+                    
+    except Exception as e:
+        logger.error("Zamanlayıcı bildirim döngüsü hatası", exc_info=True)
 
 
 if __name__ == "__main__":

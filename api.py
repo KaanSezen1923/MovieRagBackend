@@ -129,7 +129,7 @@ async def lifespan(app: FastAPI):
         ctx.tools = mcp_pool.tools
         logger.info(f"{len(ctx.tools)} adet tool, {MCP_POOL_SIZE} paralel MCP session ile yüklendi.")
 
-        scheduler.add_job(send_random_notifications, 'interval', minutes=1)
+        scheduler.add_job(send_random_notifications, 'interval', minutes=30)
         scheduler.start()
         logger.info("Zamanlayıcı (Scheduler) başlatıldı.")
 
@@ -701,8 +701,9 @@ async def chat(
     msg_count = await get_user_message_count(current_user.user_id)
     if msg_count > 0 and msg_count % 5 == 0:
         background_tasks.add_task(profile_update_task, current_user.user_id)
+         background_tasks.add_task(generate_and_save_recommendation_task, current_user.user_id)
 
-    background_tasks.add_task(generate_and_save_recommendation_task, current_user.user_id)
+   
 
     return {"answer": answer, "tool_calls": tool_calls, "tool_results": tool_results}
 
@@ -927,7 +928,7 @@ async def send_random_notifications():
             # Sadece push edilmemiş olanları (is_pushed=false) ve push_token'ı olanları bul
             records = await conn.fetch(
                 """
-                SELECT r.id, r.user_id, r.movie_id, r.title, r.message, u.expo_push_token 
+                SELECT DISTINCT ON (r.user_id) r.id, r.user_id, r.movie_id, r.title, r.message, u.expo_push_token 
                 FROM recommendations r
                 JOIN users u ON r.user_id = u.id
                 WHERE r.is_pushed = false AND u.expo_push_token IS NOT NULL

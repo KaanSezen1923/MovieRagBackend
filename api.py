@@ -28,6 +28,7 @@ import wave
 import io
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from logger import logger
+import httpx 
 
 
 load_dotenv()
@@ -248,6 +249,65 @@ async def get_user_persona(user_id: int):
         )
     return row[0] if row else None
 
+async def generate_and_save_recommendation_task(user_id: int):
+    try:
+        persona = await get_user_persona(user_id)
+        if not persona:
+            return
+            
+        favs_dict = await get_user_favorites(user_id)
+        favs = favs_dict.get("favorites", [])
+        fav_titles = [f["Film"] for f in favs][:5]
+        
+        # 1. Daha önce önerilen filmleri veritabanından çek (Son 30 öneri)
+        async with ctx.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT title FROM recommendations WHERE user_id = $1 ORDER BY created_at DESC LIMIT 30", 
+                user_id
+            )
+            past_recs = [r["title"].lower().strip() for r in rows if r["title"]]
+        
+        # 2. LLM'den mesaj ve film adı üret (Geçmiş önerileri hariç tutmasını söyleyerek)
+        res = await generate_push_message(persona, fav_titles, past_recs)
+        if not res:
+            return
+            
+        message_text, movie_title = res
+        movie_id = None
+        
+        # 3. Çifte Güvenlik: LLM kuralı çiğneyip yine aynı filmi önerdiyse kaydetme!
+        if movie_title and movie_title.lower().strip() in past_recs:
+            logger.info(f"İptal: '{movie_title}' kullanıcısına zaten önerilmiş.")
+            return
+        
+        # Film adından detayları ve movie_id'yi bul
+        if movie_title:
+            card = await get_movie_card_by_title(movie_title)
+            if card:
+                movie_id = str(card.get("movie_id"))
+                movie_title = card.get("Film", movie_title)
+        
+        # Eğer LLM'in önerdiği spesifik film TMDB'den bulunamadıysa yedek mekanizma çalışsın
+        if not movie_id:
+            cards = await get_movies_for_push(user_id)
+            if cards:
+                card = cards[0]
+                movie_id = str(card.get("movie_id"))
+                movie_title = card.get("Film")
+                
+            # Yedek mekanizma da aynısını bulduysa iptal et
+            if movie_title and movie_title.lower().strip() in past_recs:
+                logger.info(f"İptal: Yedek mekanizma '{movie_title}' filmini buldu ama zaten önerilmiş.")
+                return
+        
+        # 4. Veritabanına kaydet
+        if movie_id and movie_title and message_text:
+            await save_recommendation_to_db(user_id, movie_id, movie_title, message_text)
+            logger.info(f"Kullanıcı {user_id} için arka planda yeni öneri db'ye eklendi: {movie_title}")
+            
+    except Exception as e:
+        logger.error(f"Öneri oluşturma task'i hatası (user_id={user_id})", exc_info=True)
+
 
 def _compact_content(role: str, content: str) -> str:
     """Asistan mesajı film kartı JSON'uysa LLM bağlamı için kısa metne indirger."""
@@ -343,47 +403,6 @@ async def profile_update_task(user_id: int):
         logger.info(f"Kullanıcı {user_id} için profil güncellendi.")
     except Exception as e:
         logger.error(f"Profilleme hatası (user_id={user_id})", exc_info=True)
-
-async def generate_and_save_recommendation_task(user_id: int):
-    try:
-        persona = await get_user_persona(user_id)
-        if not persona:
-            return
-            
-        favs_dict = await get_user_favorites(user_id)
-        favs = favs_dict.get("favorites", [])
-        fav_titles = [f["Film"] for f in favs][:5]
-        
-        # LLM'den mesaj ve film adı üret
-        res = await generate_push_message(persona, fav_titles)
-        if not res:
-            return
-            
-        message_text, movie_title = res
-        movie_id = None
-        
-        # Film adından detayları ve movie_id'yi bul
-        if movie_title:
-            card = await get_movie_card_by_title(movie_title)
-            if card:
-                movie_id = str(card.get("movie_id"))
-                movie_title = card.get("Film", movie_title)
-        
-        # Eğer LLM'in önerdiği spesifik film TMDB'den bulunamadıysa yedek mekanizma çalışsın
-        if not movie_id:
-            cards = await get_movies_for_push(user_id)
-            if cards:
-                card = cards[0]
-                movie_id = str(card.get("movie_id"))
-                movie_title = card.get("Film")
-        
-        # Veritabanına kaydet (is_pushed ve is_read varsayılan olarak false kaydedilecek)
-        if movie_id and movie_title and message_text:
-            await save_recommendation_to_db(user_id, movie_id, movie_title, message_text)
-            logger.info(f"Kullanıcı {user_id} için arka planda yeni öneri db'ye eklendi.")
-            
-    except Exception as e:
-        logger.error(f"Öneri oluşturma task'i hatası (user_id={user_id})", exc_info=True)
 
 @app.get("/chat/suggestions")
 async def get_chat_suggestions(current_user: CurrentUser = Depends(get_current_user)):
@@ -742,6 +761,89 @@ async def get_favorite_ids(current_user: CurrentUser = Depends(get_current_user)
             "SELECT movie_id FROM favorites WHERE user_id = $1", current_user.user_id
         )
     return {"favorite_ids": [r["movie_id"] for r in rows]}
+
+@app.get("/discover")
+async def discover_movies(category: str = Query(default="Popüler"), current_user: CurrentUser = Depends(get_current_user)):
+    # 1. Kategoriye göre TMDB uç noktasını (endpoint) belirle
+    tmdb_endpoints = {
+        "Popüler": "popular",
+        "Vizyondakiler": "now_playing",
+        "En Çok Oy Alanlar": "top_rated",
+        "Yakında": "upcoming"
+    }
+    endpoint = tmdb_endpoints.get(category, "popular")
+    auth_key = os.getenv("AUTH_KEY") # .env dosyanızdaki TMDB API anahtarını kullanıyoruz
+    
+    if not auth_key:
+        raise HTTPException(status_code=500, detail="TMDB AUTH_KEY yapılandırılmamış.")
+
+    headers = {
+        "Authorization": f"Bearer {auth_key}",
+        "accept": "application/json"
+    }
+    
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            # 2. Filmlerin ana listesini çek
+            url = f"https://api.themoviedb.org/3/movie/{endpoint}?language=tr-TR&page=1"
+            response = await client.get(url, headers=headers)
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=500, detail="TMDB API'ye ulaşılamadı.")
+                
+            # Performansı yüksek tutmak için ilk 15 filmi alıyoruz
+            results = response.json().get("results", [])[:15]
+            
+            # 3. Yönetmen, Oyuncu ve Fragman bilgileri için paralel istekler at
+            async def fetch_movie_detail(movie_id):
+                detail_url = f"https://api.themoviedb.org/3/movie/{movie_id}?language=tr-TR&append_to_response=credits,videos"
+                res = await client.get(detail_url, headers=headers)
+                return res.json() if res.status_code == 200 else None
+
+            # Tüm filmlerin detaylarını aynı anda (paralel) çekiyoruz
+            details = await asyncio.gather(*[fetch_movie_detail(m["id"]) for m in results])
+            
+            movies = []
+            for d in details:
+                if not d:
+                    continue
+                
+                # Yönetmeni bul
+                crew = d.get("credits", {}).get("crew", [])
+                director = next((c["name"] for c in crew if c["job"] == "Director"), "Bilinmiyor")
+                
+                # Başrol oyuncularını bul (İlk 3 oyuncu)
+                cast_list = d.get("credits", {}).get("cast", [])
+                cast = ", ".join([c["name"] for c in cast_list[:3]]) if cast_list else "Bilinmiyor"
+                
+                # Youtube fragmanını bul
+                videos = d.get("videos", {}).get("results", [])
+                trailer = next((f"https://www.youtube.com/watch?v={v['key']}" for v in videos if v["site"] == "YouTube" and v["type"] == "Trailer"), "")
+                
+                # Türleri listele
+                genres = [g["name"] for g in d.get("genres", [])]
+                
+                poster_path = d.get("poster_path")
+                poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else "https://via.placeholder.com/500x750?text=No+Poster"
+                
+                # Mobil uygulamanın normalizeMovie fonksiyonuna uygun formata getiriyoruz
+                movies.append({
+                    "id": str(d.get("id")),
+                    "Film": d.get("title"), # "title" yerine "Film"
+                    "Özet": d.get("overview") or d.get("tagline") or "Özet bulunamadı.", # "overview" yerine "Özet"
+                    "Poster": poster_url, # "poster_url" yerine "Poster"
+                    "IMDb": str(round(d.get("vote_average", 0), 1)), # "imdb_rating" yerine "IMDb"
+                    "Director": director, # "director" yerine "Director"
+                    "Cast": cast, # "cast" yerine "Cast"
+                    "Türler": ", ".join(genres), # Dizi yerine virgüllü string olarak gönder
+                    "Fragman": trailer # "trailer_url" yerine "Fragman"
+                })
+                
+            return {"movies": movies}
+            
+        except httpx.RequestError as e:
+            logger.error(f"HTTP İstek Hatası: {e}")
+            raise HTTPException(status_code=500, detail="Film servisine bağlanılamadı.")
 
 @app.post("/update-push-token")
 async def update_push_token(req: TokenRequest, current_user: CurrentUser = Depends(get_current_user)):

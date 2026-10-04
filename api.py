@@ -928,11 +928,12 @@ async def send_random_notifications():
             # Sadece push edilmemiş olanları (is_pushed=false) ve push_token'ı olanları bul
             records = await conn.fetch(
                 """
-                SELECT DISTINCT ON (r.user_id) r.id, r.user_id, r.movie_id, r.title, r.message, u.expo_push_token 
-                FROM recommendations r
-                JOIN users u ON r.user_id = u.id
-                WHERE r.is_pushed = false AND u.expo_push_token IS NOT NULL
-                LIMIT 50
+                    SELECT DISTINCT ON (r.user_id) r.id, r.user_id, r.movie_id, r.title, r.message, u.expo_push_token 
+                    FROM recommendations r
+                    JOIN users u ON r.user_id = u.id
+                    WHERE r.is_pushed = false AND u.expo_push_token IS NOT NULL
+                    ORDER BY r.user_id, r.created_at DESC -- DİKKAT: DISTINCT ON sonrası sıralama şarttır
+                    LIMIT 50
                 """
             )
             

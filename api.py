@@ -2,11 +2,23 @@ import os
 import sys
 import json
 import asyncio
+import tempfile
+import random
 from contextlib import AsyncExitStack, asynccontextmanager
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Depends, Request, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, field_validator
 from mcp import StdioServerParameters
 from dotenv import load_dotenv
+from groq import Groq
+import asyncpg
+import bcrypt
+import uvicorn
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from exponent_server_sdk import PushClient, PushMessage
+import httpx 
+
 from shared import ctx, chat_statuses, MCPSessionPool
 from client import (
     get_ollama_tools, generate_user_profile, generate_user_suggestions,
@@ -16,20 +28,10 @@ from auth import (
     CurrentUser, create_access_token, get_current_user,
     login_rate_limiter, signup_rate_limiter, client_ip,
 )
-import asyncpg
-import bcrypt
-import tempfile
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from exponent_server_sdk import PushClient, PushMessage
-import random
-import uvicorn
-from groq import Groq
-import wave
-import io
-from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from logger import logger
-import httpx 
 
+# --- KATALOG ROUTER'I İÇERİ AKTARILIYOR ---
+from catalog import router as catalog_router
 
 load_dotenv()
 
@@ -38,7 +40,6 @@ _REQUIRED_ENV_VARS = [
     "NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD",
     "AUTH_KEY",          
     "WHISPER_API_KEY",   
-    "NVIDIA_API_KEY",    
 ]
 
 def _validate_env() -> None:
@@ -129,6 +130,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Movie Explorer AI API", lifespan=lifespan)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- REACT FİLM SİTESİ İÇİN KATALOG ENDPOINT'LERİ ---
+# /catalog/... (home, browse, search, detay) burada dahil ediliyor.
+app.include_router(catalog_router)
+
 @app.get("/health")
 async def health():
     checks = {"db": False, "mcp": False}
@@ -146,6 +158,8 @@ async def health():
     healthy = all(checks.values())
     status_code = 200 if healthy else 503
     return JSONResponse(status_code=status_code, content={"status": "ok" if healthy else "degraded", "checks": checks})
+
+# --- KULLANICI / YETKİLENDİRME (AUTH) İŞLEMLERİ ---
 
 class UserSignup(BaseModel):
     username: str
@@ -168,15 +182,6 @@ class ChangePasswordRequest(BaseModel):
     old_password: str
     new_password: str
 
-class ChatRequest(BaseModel):
-    prompt: str
-    session_id: str
-
-class ChatResponse(BaseModel):
-    answer: str
-    tool_calls: list = []
-    tool_results: list = []
-
 def hash_password(password: str):
     pwd_bytes = password.encode('utf-8')
     salt = bcrypt.gensalt()
@@ -188,89 +193,99 @@ def verify_password(plain_password, hashed_password):
     hashed_byte = hashed_password.encode('utf-8')
     return bcrypt.checkpw(password_byte, hashed_byte)
 
-
-async def save_chat_to_db(user_id: int, role: str, content: str, session_id: str):
+@app.post("/signup")
+async def signup(user: UserSignup, request: Request):
+    signup_rate_limiter.check(client_ip(request))
     try:
         async with ctx.db_pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO chat_history (user_id, role, content, session_id) VALUES ($1, $2, $3, $4)",
-                user_id, role, content, session_id
-            )
-    except Exception as e:
-       logger.error("DB Kayıt Hatası", exc_info=True)
+            async with conn.transaction():
+                existing = await conn.fetchrow(
+                    "SELECT id FROM users WHERE username = $1 OR email = $2",
+                    user.username, user.email
+                )
+                if existing:
+                    raise HTTPException(status_code=400, detail="Kullanıcı adı veya email zaten kayıtlı.")
 
-async def save_recommendation_to_db(user_id: int, movie_id: str, title: str, message: str):
+                hashed_pwd = hash_password(user.password)
+                new_user_id = await conn.fetchval(
+                    "INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING id",
+                    user.username, user.email, hashed_pwd
+                )
+                await conn.execute("INSERT INTO user_profiles (user_id) VALUES ($1)", new_user_id)
+
+        return {"message": "Kayıt başarılı! Giriş yapabilirsiniz."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Kayıt (signup) hatası", exc_info=True)
+        raise HTTPException(status_code=500, detail="Kayıt işlemi sırasında bir hata oluştu.")
+
+@app.post("/login")
+async def login(user: UserLogin, request: Request):
+    login_rate_limiter.check(client_ip(request))
     try:
         async with ctx.db_pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO recommendations (user_id, movie_id, title, message) 
-                VALUES ($1, $2, $3, $4)
-                """,
-                user_id, movie_id, title, message
-            )
+            record = await conn.fetchrow("SELECT id, password_hash FROM users WHERE username = $1", user.username)
+
+        if record and verify_password(user.password, record["password_hash"]):
+            access_token = create_access_token(user_id=record["id"], username=user.username)
+            return {
+                "status": "success",
+                "access_token": access_token,
+                "token_type": "bearer",
+                "user_id": record["id"],
+                "username": user.username,
+                "message": f"Hoş geldin {user.username}!"
+            }
+        raise HTTPException(status_code=401, detail="Hatalı kullanıcı adı veya şifre.")
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error("Öneri veritabanına kaydedilemedi", exc_info=True)
+        logger.error("Giriş (login) hatası", exc_info=True)
+        raise HTTPException(status_code=500, detail="Giriş işlemi sırasında bir hata oluştu.")
 
-async def get_user_persona(user_id: int):
-    async with ctx.db_pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT persona_summary FROM user_profiles WHERE user_id = $1",
-            user_id
-        )
-    return row[0] if row else None
-
-async def generate_and_save_recommendation_task(user_id: int):
+@app.post("/update-profile")
+async def update_profile(req: UpdateProfileRequest, current_user: CurrentUser = Depends(get_current_user)):
     try:
-        persona = await get_user_persona(user_id)
-        if not persona:
-            return
-            
-        favs_dict = await get_user_favorites(user_id)
-        favs = favs_dict.get("favorites", [])
-        fav_titles = [f["Film"] for f in favs][:5]
-        
         async with ctx.db_pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT title FROM recommendations WHERE user_id = $1 ORDER BY created_at DESC LIMIT 30", 
-                user_id
-            )
-            past_recs = [r["title"].lower().strip() for r in rows if r["title"]]
-        
-        res = await generate_push_message(persona, fav_titles, past_recs)
-        if not res:
-            return
-            
-        message_text, movie_title = res
-        movie_id = None
-        
-        if movie_title and movie_title.lower().strip() in past_recs:
-            logger.info(f"İptal: '{movie_title}' kullanıcısına zaten önerilmiş.")
-            return
-        
-        if movie_title:
-            card = await get_movie_card_by_title(movie_title)
-            if card:
-                movie_id = str(card.get("movie_id"))
-                movie_title = card.get("Film", movie_title)
-        
-        if not movie_id:
-            cards = await get_movies_for_push(user_id)
-            if cards:
-                card = cards[0]
-                movie_id = str(card.get("movie_id"))
-                movie_title = card.get("Film")
-                
-            if movie_title and movie_title.lower().strip() in past_recs:
-                logger.info(f"İptal: Yedek mekanizma '{movie_title}' filmini buldu ama zaten önerilmiş.")
-                return
-        
-        if movie_id and movie_title and message_text:
-            await save_recommendation_to_db(user_id, movie_id, movie_title, message_text)
-            logger.info(f"Kullanıcı {user_id} için arka planda yeni öneri db'ye eklendi: {movie_title}")
-            
-    except Exception as e:
-        logger.error(f"Öneri oluşturma task'i hatası (user_id={user_id})", exc_info=True)
+            async with conn.transaction():
+                taken = await conn.fetchrow("SELECT id FROM users WHERE username = $1 AND id != $2", req.new_username, current_user.user_id)
+                if taken:
+                    raise HTTPException(status_code=400, detail="Bu kullanıcı adı zaten alınmış.")
+                await conn.execute("UPDATE users SET username = $1 WHERE id = $2", req.new_username, current_user.user_id)
+        return {"status": "success", "username": req.new_username}
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="Profil güncellenemedi.")
+
+@app.post("/change-password")
+async def change_password(req: ChangePasswordRequest, current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        async with ctx.db_pool.acquire() as conn:
+            record = await conn.fetchrow("SELECT password_hash FROM users WHERE id = $1", current_user.user_id)
+            if not record or not verify_password(req.old_password, record["password_hash"]):
+                raise HTTPException(status_code=400, detail="Mevcut şifreniz hatalı.")
+
+            hashed_pwd = hash_password(req.new_password)
+            await conn.execute("UPDATE users SET password_hash = $1 WHERE id = $2", hashed_pwd, current_user.user_id)
+        return {"status": "success", "message": "Şifreniz başarıyla değiştirildi."}
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="Şifre değiştirilemedi.")
+
+
+# --- SOHBET / ÖNERİ MOTORU ---
+
+class ChatRequest(BaseModel):
+    prompt: str
+    session_id: str
+
+class ChatResponse(BaseModel):
+    answer: str
+    tool_calls: list = []
+    tool_results: list = []
 
 def _compact_content(role: str, content: str) -> str:
     if role != "assistant":
@@ -293,333 +308,10 @@ async def get_recent_chats(user_id: int, limit: int = 10):
         )
     return [{"role": r["role"], "content": _compact_content(r["role"], r["content"])} for r in reversed(rows)]
 
-async def get_user_favorites(user_id: int, limit: int | None = None, offset: int = 0):
-    try:
-        async with ctx.db_pool.acquire() as conn:
-            if limit is not None:
-                rows = await conn.fetch(
-                    """
-                    SELECT movie_id, title, genres, director, cast_members, poster_url, imdb_rating, trailer_url
-                    FROM favorites
-                    WHERE user_id = $1
-                    ORDER BY created_at DESC
-                    LIMIT $2 OFFSET $3
-                    """,
-                    user_id, limit, offset
-                )
-                total = await conn.fetchval(
-                    "SELECT COUNT(*) FROM favorites WHERE user_id = $1", user_id
-                )
-            else:
-                rows = await conn.fetch(
-                    """
-                    SELECT movie_id, title, genres, director, cast_members, poster_url, imdb_rating, trailer_url
-                    FROM favorites
-                    WHERE user_id = $1
-                    ORDER BY created_at DESC
-                    """,
-                    user_id
-                )
-                total = len(rows)
-
-        favorites = [
-            {
-                "movie_id": r["movie_id"],
-                "Film": r["title"],
-                "Türler": r["genres"],
-                "Director": r["director"],
-                "Cast": r["cast_members"],
-                "Poster": r["poster_url"],
-                "TMDB Puanı": r["imdb_rating"],  
-                "Fragman": r["trailer_url"], 
-            } for r in rows
-        ]
-
-        return {"favorites": favorites, "total": total}
-    except Exception as e:
-        logger.error("Favori getirme hatası", exc_info=True)
-        raise HTTPException(status_code=500, detail="Favoriler alınamadı.")
-
-async def update_persona_in_db(user_id: int, summary: str):
+async def get_user_persona(user_id: int):
     async with ctx.db_pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE user_profiles SET persona_summary = $1, last_updated = CURRENT_TIMESTAMP WHERE user_id = $2",
-            summary, user_id
-        )
-
-async def profile_update_task(user_id: int):
-    try:
-        history_list = await get_recent_chats(user_id, limit=10)
-        history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_list])
-
-        favorites_dict = await get_user_favorites(user_id)
-        favs = favorites_dict.get("favorites", [])
-        fav_items = [f"{f['Film']} ({f['Türler'] or ''})" for f in favs]
-        favorites_text = ", ".join(fav_items) if fav_items else "Henüz favori eklenmemiş."
-
-        new_profile = await generate_user_profile(history_text, favorites_text)
-
-        await update_persona_in_db(user_id, new_profile)
-        logger.info(f"Kullanıcı {user_id} için profil güncellendi.")
-    except Exception as e:
-        logger.error(f"Profilleme hatası (user_id={user_id})", exc_info=True)
-
-# Profil güncelleme ve öneri işlemlerini sıralı çalıştıran senkronizasyon bloğu
-async def profile_and_recommendation_workflow(user_id: int):
-    await profile_update_task(user_id)
-    await generate_and_save_recommendation_task(user_id)
-
-@app.get("/chat/suggestions")
-async def get_chat_suggestions(current_user: CurrentUser = Depends(get_current_user)):
-    default_suggestions = ["Bilim kurgu filmi öner", "Nolan filmi öner", "Tim Burton filmi öner"]
-    try:
-        history_list = await get_recent_chats(current_user.user_id, limit=10)
-
-        favorites_dict = await get_user_favorites(current_user.user_id)
-        favs = favorites_dict.get("favorites", [])
-        fav_items = [f"{f['Film']} ({f['Türler'] or ''})" for f in favs]
-
-        if not history_list and not fav_items:
-            return {"suggestions": default_suggestions}
-
-        history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_list])
-        favorites_text = ", ".join(fav_items) if fav_items else "Henüz favori eklenmemiş."
-
-        suggestions = await generate_user_suggestions(history_text, favorites_text)
-        return {"suggestions": suggestions}
-    except Exception as e:
-        logger.error("Öneri butonları üretme hatası", exc_info=True)
-        return {"suggestions": default_suggestions}
-
-@app.get("/chat/status/{session_id}")
-async def get_chat_status(session_id: str, current_user: CurrentUser = Depends(get_current_user)):
-    status = chat_statuses.get(session_id, "")
-    return {"status": status}
-
-@app.post("/signup")
-async def signup(user: UserSignup, request: Request):
-    signup_rate_limiter.check(client_ip(request))
-    try:
-        async with ctx.db_pool.acquire() as conn:
-            async with conn.transaction():
-                existing = await conn.fetchrow(
-                    "SELECT id FROM users WHERE username = $1 OR email = $2",
-                    user.username, user.email
-                )
-                if existing:
-                    raise HTTPException(status_code=400, detail="Kullanıcı adı veya email zaten kayıtlı.")
-
-                hashed_pwd = hash_password(user.password)
-
-                new_user_id = await conn.fetchval(
-                    "INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING id",
-                    user.username, user.email, hashed_pwd
-                )
-
-                await conn.execute(
-                    "INSERT INTO user_profiles (user_id) VALUES ($1)",
-                    new_user_id
-                )
-
-        return {"message": "Kayıt başarılı! Giriş yapabilirsiniz."}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Kayıt (signup) hatası", exc_info=True)
-        raise HTTPException(status_code=500, detail="Kayıt işlemi sırasında bir hata oluştu.")
-
-@app.post("/login")
-async def login(user: UserLogin, request: Request):
-    login_rate_limiter.check(client_ip(request))
-    try:
-        async with ctx.db_pool.acquire() as conn:
-            record = await conn.fetchrow(
-                "SELECT id, password_hash FROM users WHERE username = $1", user.username
-            )
-
-        if record and verify_password(user.password, record["password_hash"]):
-            access_token = create_access_token(user_id=record["id"], username=user.username)
-            return {
-                "status": "success",
-                "access_token": access_token,
-                "token_type": "bearer",
-                "user_id": record["id"],
-                "username": user.username,
-                "message": f"Hoş geldin {user.username}!"
-            }
-
-        raise HTTPException(status_code=401, detail="Hatalı kullanıcı adı veya şifre.")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Giriş (login) hatası", exc_info=True)
-        raise HTTPException(status_code=500, detail="Giriş işlemi sırasında bir hata oluştu.")
-
-@app.post("/update-profile")
-async def update_profile(req: UpdateProfileRequest, current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        async with ctx.db_pool.acquire() as conn:
-            async with conn.transaction():
-                taken = await conn.fetchrow(
-                    "SELECT id FROM users WHERE username = $1 AND id != $2",
-                    req.new_username, current_user.user_id
-                )
-                if taken:
-                    raise HTTPException(status_code=400, detail="Bu kullanıcı adı zaten alınmış.")
-
-                await conn.execute(
-                    "UPDATE users SET username = $1 WHERE id = $2",
-                    req.new_username, current_user.user_id
-                )
-
-        return {"status": "success", "username": req.new_username}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Profil güncelleme hatası", exc_info=True)
-        raise HTTPException(status_code=500, detail="Profil güncellenemedi.")
-
-@app.post("/change-password")
-async def change_password(req: ChangePasswordRequest, current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        async with ctx.db_pool.acquire() as conn:
-            record = await conn.fetchrow(
-                "SELECT password_hash FROM users WHERE id = $1", current_user.user_id
-            )
-            if not record or not verify_password(req.old_password, record["password_hash"]):
-                raise HTTPException(status_code=400, detail="Mevcut şifreniz hatalı.")
-
-            hashed_pwd = hash_password(req.new_password)
-            await conn.execute(
-                "UPDATE users SET password_hash = $1 WHERE id = $2",
-                hashed_pwd, current_user.user_id
-            )
-        return {"status": "success", "message": "Şifreniz başarıyla değiştirildi."}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Şifre değiştirme hatası", exc_info=True)
-        raise HTTPException(status_code=500, detail="Şifre değiştirilemedi.")
-
-@app.get("/sessions")
-async def get_sessions(
-    current_user: CurrentUser = Depends(get_current_user),
-    limit: int = Query(default=20, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
-):
-    try:
-        async with ctx.db_pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT session_id,
-                       MIN(created_at) as created,
-                       (SELECT content FROM chat_history ch2 WHERE ch2.session_id = ch1.session_id AND role='user' ORDER BY created_at ASC LIMIT 1) as title
-                FROM chat_history ch1
-                WHERE user_id = $1
-                GROUP BY session_id
-                ORDER BY created DESC
-                LIMIT $2 OFFSET $3
-                """,
-                current_user.user_id, limit, offset
-            )
-            total = await conn.fetchval(
-                "SELECT COUNT(DISTINCT session_id) FROM chat_history WHERE user_id = $1",
-                current_user.user_id
-            )
-        sessions = [{"session_id": r["session_id"], "title": r["title"] if r["title"] else "Yeni Sohbet"} for r in rows]
-        return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
-    except Exception as e:
-        logger.error("Oturum listesi getirme hatası", exc_info=True)
-        raise HTTPException(status_code=500, detail="Oturumlar alınamadı.")
-
-@app.get("/chat/{session_id}")
-async def get_chat_history(
-    session_id: str,
-    current_user: CurrentUser = Depends(get_current_user),
-    limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-):
-    try:
-        async with ctx.db_pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT role, content FROM chat_history
-                WHERE user_id = $1 AND session_id = $2
-                ORDER BY created_at ASC
-                LIMIT $3 OFFSET $4
-                """,
-                current_user.user_id, session_id, limit, offset
-            )
-            total = await conn.fetchval(
-                "SELECT COUNT(*) FROM chat_history WHERE user_id = $1 AND session_id = $2",
-                current_user.user_id, session_id
-            )
-        history = [{"role": r["role"], "content": r["content"]} for r in rows]
-        return {"history": history, "total": total, "limit": limit, "offset": offset}
-    except Exception as e:
-        logger.error("Sohbet geçmişi getirme hatası", exc_info=True)
-        raise HTTPException(status_code=500, detail="Sohbet geçmişi alınamadı.")
-
-@app.delete("/chat/{session_id}")
-async def delete_session(session_id: str, current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        async with ctx.db_pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM chat_history WHERE user_id = $1 AND session_id = $2",
-                current_user.user_id, session_id
-            )
-        return {"status": "success"}
-    except Exception as e:
-        logger.error("Sohbet silme hatası", exc_info=True)
-        raise HTTPException(status_code=500, detail="Sohbet silinemedi.")
-
-@app.post("/transcribe", response_model=TranscriptionResponse)
-async def transcribe_audio(audio: UploadFile = File(...), current_user: CurrentUser = Depends(get_current_user)):
-    temp_file_path = None
-    try:
-        file_ext = os.path.splitext(audio.filename or "")[1].lower()
-        if not file_ext:
-            file_ext = ".wav"
-        if file_ext not in ALLOWED_AUDIO_EXTENSIONS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Desteklenmeyen ses formatı: {file_ext}. İzin verilenler: "
-                       f"{', '.join(sorted(ALLOWED_AUDIO_EXTENSIONS))}",
-            )
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
-            total = 0
-            while chunk := await audio.read(1024 * 1024): 
-                total += len(chunk)
-                if total > MAX_AUDIO_BYTES:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"Dosya çok büyük (limit: {MAX_AUDIO_BYTES // (1024 * 1024)} MB).",
-                    )
-                temp_file.write(chunk)
-            if total == 0:
-                raise HTTPException(status_code=400, detail="Dosya içeriği boş.")
-            temp_file_path = temp_file.name
-
-        with open(temp_file_path, "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
-                model="whisper-large-v3",
-                file=audio_file,
-                language="tr"
-            )
-
-        return TranscriptionResponse(text=transcription.text.strip(), success=True)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Transkripsiyon hatası", exc_info=True)
-        raise HTTPException(status_code=500, detail="Ses dosyası işlenemedi, lütfen tekrar deneyin.")
-    finally:
-        if temp_file_path and os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
+        row = await conn.fetchrow("SELECT persona_summary FROM user_profiles WHERE user_id = $1", user_id)
+    return row[0] if row else None
 
 @app.post("/chat")
 async def chat(
@@ -642,7 +334,8 @@ async def chat(
         "final_output": "",
         "tool_calls": [],
         "tool_results": [],
-        "session_id": request.session_id
+        "session_id": request.session_id,
+        "user_id": current_user.user_id
     }
 
     try:
@@ -657,165 +350,167 @@ async def chat(
     finally:
         chat_statuses.pop(request.session_id, None)
 
-    await save_chat_to_db(current_user.user_id, "user", request.prompt, request.session_id)
-    await save_chat_to_db(current_user.user_id, "assistant", answer, request.session_id)
-
-    msg_count = await get_user_message_count(current_user.user_id)
+    async with ctx.db_pool.acquire() as conn:
+        await conn.execute("INSERT INTO chat_history (user_id, role, content, session_id) VALUES ($1, $2, $3, $4)", current_user.user_id, "user", request.prompt, request.session_id)
+        await conn.execute("INSERT INTO chat_history (user_id, role, content, session_id) VALUES ($1, $2, $3, $4)", current_user.user_id, "assistant", answer, request.session_id)
+        msg_count = await conn.fetchval("SELECT COUNT(*) FROM chat_history WHERE user_id = $1", current_user.user_id)
     
-    # Hata Düzeltmesi 1 ve 2: Girinti hatası giderildi, task'lar senkron bir workflow'a bağlandı.
     if msg_count > 0 and msg_count % 5 == 0:
         background_tasks.add_task(profile_and_recommendation_workflow, current_user.user_id)
 
     return {"answer": answer, "tool_calls": tool_calls, "tool_results": tool_results}
 
-async def get_user_message_count(user_id: int):
+@app.get("/sessions")
+async def get_sessions(current_user: CurrentUser = Depends(get_current_user), limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)):
+    try:
+        async with ctx.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT session_id,
+                       MIN(created_at) as created,
+                       (SELECT content FROM chat_history ch2 WHERE ch2.session_id = ch1.session_id AND role='user' ORDER BY created_at ASC LIMIT 1) as title
+                FROM chat_history ch1
+                WHERE user_id = $1
+                GROUP BY session_id
+                ORDER BY created DESC
+                LIMIT $2 OFFSET $3
+                """,
+                current_user.user_id, limit, offset
+            )
+            total = await conn.fetchval("SELECT COUNT(DISTINCT session_id) FROM chat_history WHERE user_id = $1", current_user.user_id)
+        sessions = [{"session_id": r["session_id"], "title": r["title"] if r["title"] else "Yeni Sohbet"} for r in rows]
+        return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+    except Exception:
+        raise HTTPException(status_code=500, detail="Oturumlar alınamadı.")
+
+@app.get("/chat/{session_id}")
+async def get_chat_history(session_id: str, current_user: CurrentUser = Depends(get_current_user), limit: int = Query(default=100), offset: int = Query(default=0)):
+    try:
+        async with ctx.db_pool.acquire() as conn:
+            rows = await conn.fetch("SELECT role, content FROM chat_history WHERE user_id = $1 AND session_id = $2 ORDER BY created_at ASC LIMIT $3 OFFSET $4", current_user.user_id, session_id, limit, offset)
+            total = await conn.fetchval("SELECT COUNT(*) FROM chat_history WHERE user_id = $1 AND session_id = $2", current_user.user_id, session_id)
+        history = [{"role": r["role"], "content": r["content"]} for r in rows]
+        return {"history": history, "total": total, "limit": limit, "offset": offset}
+    except Exception:
+        raise HTTPException(status_code=500, detail="Sohbet geçmişi alınamadı.")
+
+@app.get("/chat/suggestions")
+async def get_chat_suggestions(current_user: CurrentUser = Depends(get_current_user)):
+    default_suggestions = ["Bilim kurgu filmi öner", "Nolan filmi öner", "Tim Burton filmi öner"]
+    try:
+        history_list = await get_recent_chats(current_user.user_id, limit=10)
+        favorites_dict = await get_user_favorites(current_user.user_id)
+        fav_items = [f"{f['Film']} ({f['Türler'] or ''})" for f in favorites_dict.get("favorites", [])]
+
+        if not history_list and not fav_items:
+            return {"suggestions": default_suggestions}
+
+        history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_list])
+        favorites_text = ", ".join(fav_items) if fav_items else "Henüz favori eklenmemiş."
+        suggestions = await generate_user_suggestions(history_text, favorites_text)
+        return {"suggestions": suggestions}
+    except Exception:
+        return {"suggestions": default_suggestions}
+
+@app.delete("/chat/{session_id}")
+async def delete_session(session_id: str, current_user: CurrentUser = Depends(get_current_user)):
     async with ctx.db_pool.acquire() as conn:
-        return await conn.fetchval(
-            "SELECT COUNT(*) FROM chat_history WHERE user_id = $1", user_id
-        )
+        await conn.execute("DELETE FROM chat_history WHERE user_id = $1 AND session_id = $2", current_user.user_id, session_id)
+    return {"status": "success"}
+
+
+
+@app.get("/chat/status/{session_id}")
+async def get_chat_status(session_id: str, current_user: CurrentUser = Depends(get_current_user)):
+    return {"status": chat_statuses.get(session_id, "")}
+
+@app.post("/transcribe", response_model=TranscriptionResponse)
+async def transcribe_audio(audio: UploadFile = File(...), current_user: CurrentUser = Depends(get_current_user)):
+    temp_file_path = None
+    try:
+        file_ext = os.path.splitext(audio.filename or "")[1].lower() or ".wav"
+        if file_ext not in ALLOWED_AUDIO_EXTENSIONS:
+            raise HTTPException(status_code=400, detail="Desteklenmeyen ses formatı.")
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
+            total = 0
+            while chunk := await audio.read(1024 * 1024): 
+                total += len(chunk)
+                if total > MAX_AUDIO_BYTES:
+                    raise HTTPException(status_code=413, detail="Dosya çok büyük.")
+                temp_file.write(chunk)
+            temp_file_path = temp_file.name
+
+        with open(temp_file_path, "rb") as audio_file:
+            transcription = client.audio.transcriptions.create(model="whisper-large-v3", file=audio_file, language="tr")
+
+        return TranscriptionResponse(text=transcription.text.strip(), success=True)
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+
+
+# --- FAVORİLER ---
+
+async def get_user_favorites(user_id: int, limit: int | None = None, offset: int = 0):
+    try:
+        async with ctx.db_pool.acquire() as conn:
+            if limit is not None:
+                rows = await conn.fetch("SELECT * FROM favorites WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3", user_id, limit, offset)
+                total = await conn.fetchval("SELECT COUNT(*) FROM favorites WHERE user_id = $1", user_id)
+            else:
+                rows = await conn.fetch("SELECT * FROM favorites WHERE user_id = $1 ORDER BY created_at DESC", user_id)
+                total = len(rows)
+
+        favorites = [{
+            "movie_id": r["movie_id"], "Film": r["title"], "Türler": r["genres"],
+            "Director": r["director"], "Cast": r["cast_members"], "Poster": r["poster_url"],
+            "TMDB Puanı": r["imdb_rating"], "Fragman": r["trailer_url"], 
+        } for r in rows]
+
+        return {"favorites": favorites, "total": total}
+    except Exception:
+        raise HTTPException(status_code=500, detail="Favoriler alınamadı.")
 
 @app.post("/favorites")
 async def add_favorite(fav: FavoriteRequest, current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        async with ctx.db_pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO favorites (user_id, movie_id, title, genres, director, cast_members, poster_url, imdb_rating, trailer_url)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                ON CONFLICT (user_id, movie_id) DO NOTHING
-                """,
-                current_user.user_id, fav.movie_id, fav.title,
-                fav.genres, fav.director, fav.cast_members,
-                fav.poster_url, fav.imdb_rating, fav.trailer_url 
-            )
-        return {"status": "success", "message": "Film detaylarıyla birlikte favorilere eklendi."}
-    except Exception as e:
-        logger.error("Favori ekleme hatası", exc_info=True)
-        raise HTTPException(status_code=500, detail="Favori eklenemedi.")
+    async with ctx.db_pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO favorites (user_id, movie_id, title, genres, director, cast_members, poster_url, imdb_rating, trailer_url)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (user_id, movie_id) DO NOTHING""",
+            current_user.user_id, fav.movie_id, fav.title, fav.genres, fav.director, fav.cast_members, fav.poster_url, fav.imdb_rating, fav.trailer_url 
+        )
+    return {"status": "success"}
 
 @app.delete("/favorites/{movie_id}")
 async def delete_favorite(movie_id: str, current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        async with ctx.db_pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM favorites WHERE user_id = $1 AND movie_id = $2",
-                current_user.user_id, movie_id
-            )
-        return {"status": "success"}
-    except Exception as e:
-        logger.error("Favori silme hatası", exc_info=True)
-        raise HTTPException(status_code=500, detail="Favori silinemedi.")
+    async with ctx.db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM favorites WHERE user_id = $1 AND movie_id = $2", current_user.user_id, movie_id)
+    return {"status": "success"}
 
 @app.get("/favorites")
-async def get_favorites(
-    current_user: CurrentUser = Depends(get_current_user),
-    limit: int = Query(default=20, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
-):
+async def get_favorites(current_user: CurrentUser = Depends(get_current_user), limit: int = Query(default=20), offset: int = Query(default=0)):
     return await get_user_favorites(current_user.user_id, limit=limit, offset=offset)
 
 @app.get("/favorites/ids")
 async def get_favorite_ids(current_user: CurrentUser = Depends(get_current_user)):
     async with ctx.db_pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT movie_id FROM favorites WHERE user_id = $1", current_user.user_id
-        )
+        rows = await conn.fetch("SELECT movie_id FROM favorites WHERE user_id = $1", current_user.user_id)
     return {"favorite_ids": [r["movie_id"] for r in rows]}
 
-@app.get("/discover")
-async def discover_movies(category: str = Query(default="Popüler"), current_user: CurrentUser = Depends(get_current_user)):
-    tmdb_endpoints = {
-        "Popüler": "popular",
-        "Vizyondakiler": "now_playing",
-        "En Çok Oy Alanlar": "top_rated",
-        "Yakında": "upcoming"
-    }
-    endpoint = tmdb_endpoints.get(category, "popular")
-    auth_key = os.getenv("AUTH_KEY") 
-    
-    if not auth_key:
-        raise HTTPException(status_code=500, detail="TMDB AUTH_KEY yapılandırılmamış.")
 
-    headers = {
-        "Authorization": f"Bearer {auth_key}",
-        "accept": "application/json"
-    }
-    
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        try:
-            url = f"https://api.themoviedb.org/3/movie/{endpoint}?language=tr-TR&page=1"
-            response = await client.get(url, headers=headers)
-            
-            if response.status_code != 200:
-                raise HTTPException(status_code=500, detail="TMDB API'ye ulaşılamadı.")
-                
-            results = response.json().get("results", [])[:15]
-            
-            async def fetch_movie_detail(movie_id):
-                detail_url = f"https://api.themoviedb.org/3/movie/{movie_id}?language=tr-TR&append_to_response=credits,videos"
-                res = await client.get(detail_url, headers=headers)
-                return res.json() if res.status_code == 200 else None
-
-            details = await asyncio.gather(*[fetch_movie_detail(m["id"]) for m in results])
-            
-            movies = []
-            for d in details:
-                if not d:
-                    continue
-                
-                crew = d.get("credits", {}).get("crew", [])
-                director = next((c["name"] for c in crew if c["job"] == "Director"), "Bilinmiyor")
-                
-                cast_list = d.get("credits", {}).get("cast", [])
-                cast = ", ".join([c["name"] for c in cast_list[:3]]) if cast_list else "Bilinmiyor"
-                
-                videos = d.get("videos", {}).get("results", [])
-                trailer = next((f"https://www.youtube.com/watch?v={v['key']}" for v in videos if v["site"] == "YouTube" and v["type"] == "Trailer"), "")
-                
-                genres = [g["name"] for g in d.get("genres", [])]
-                
-                poster_path = d.get("poster_path")
-                poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else "https://via.placeholder.com/500x750?text=No+Poster"
-                
-                movies.append({
-                    "id": str(d.get("id")),
-                    "Film": d.get("title"), 
-                    "Özet": d.get("overview") or d.get("tagline") or "Özet bulunamadı.", 
-                    "Poster": poster_url, 
-                    "IMDb": str(round(d.get("vote_average", 0), 1)), 
-                    "Director": director, 
-                    "Cast": cast, 
-                    "Türler": ", ".join(genres), 
-                    "Fragman": trailer 
-                })
-                
-            return {"movies": movies}
-            
-        except httpx.RequestError as e:
-            logger.error(f"HTTP İstek Hatası: {e}")
-            raise HTTPException(status_code=500, detail="Film servisine bağlanılamadı.")
+# --- BİLDİRİM VE PROFİLLEME (ARKA PLAN GÖREVLERİ) ---
 
 @app.post("/update-push-token")
 async def update_push_token(req: TokenRequest, current_user: CurrentUser = Depends(get_current_user)):
     async with ctx.db_pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE users SET expo_push_token = $1 WHERE id = $2",
-            req.token, current_user.user_id
-        )
+        await conn.execute("UPDATE users SET expo_push_token = $1 WHERE id = $2", req.token, current_user.user_id)
     return {"status": "success"}
 
 @app.get("/recommendations")
 async def get_user_recommendations(current_user: CurrentUser = Depends(get_current_user)):
     async with ctx.db_pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, title, message, created_at, is_read 
-            FROM recommendations 
-            WHERE user_id = $1 
-            ORDER BY created_at DESC LIMIT 50
-            """, 
-            current_user.user_id
-        )
+        rows = await conn.fetch("SELECT id, title, message, created_at, is_read FROM recommendations WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50", current_user.user_id)
     return [{"id": r["id"], "title": r["title"], "body": r["message"], "date": r["created_at"], "is_read": r["is_read"]} for r in rows]
 
 @app.patch("/recommendations/read")
@@ -824,6 +519,20 @@ async def mark_recommendations_read(current_user: CurrentUser = Depends(get_curr
         await conn.execute("UPDATE recommendations SET is_read = true WHERE user_id = $1", current_user.user_id)
     return {"status": "success"}
 
+async def profile_update_task(user_id: int):
+    try:
+        history_list = await get_recent_chats(user_id, limit=10)
+        history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_list])
+        favorites_dict = await get_user_favorites(user_id)
+        fav_items = [f"{f['Film']} ({f['Türler'] or ''})" for f in favorites_dict.get("favorites", [])]
+        favorites_text = ", ".join(fav_items) if fav_items else "Henüz favori eklenmemiş."
+
+        new_profile = await generate_user_profile(history_text, favorites_text)
+        async with ctx.db_pool.acquire() as conn:
+            await conn.execute("UPDATE user_profiles SET persona_summary = $1, last_updated = CURRENT_TIMESTAMP WHERE user_id = $2", new_profile, user_id)
+    except Exception as e:
+        logger.error(f"Profilleme hatası (user_id={user_id})", exc_info=True)
+
 def _parse_cards(result) -> list:
     try:
         data = json.loads(result.content[0].text)
@@ -831,44 +540,49 @@ def _parse_cards(result) -> list:
     except Exception:
         return []
 
-async def generate_push_notification(user_id: int):
-    persona = await get_user_persona(user_id)
-    if not persona:
-        return None
-    favs_dict = await get_user_favorites(user_id)
-    favs = favs_dict["favorites"]
-    fav_titles = [f["Film"] for f in favs][:5]
-    return await generate_push_message(persona, fav_titles)
-
-async def get_movies_for_push(user_id: int):
-    try:
-        favs_dict = await get_user_favorites(user_id)
-        favs = favs_dict.get("favorites", [])
-        fav_titles = {f["Film"].strip().lower() for f in favs if f.get("Film")}
-        genres = {g.strip() for f in favs for g in (f.get("Türler") or "").split(",") if g.strip()}
-        picked = random.sample(sorted(genres), k=min(2, len(genres))) if genres else ["Action", "Drama"]
-
-        result = await ctx.session.call_tool(
-            "search_movies_by_filters",
-            {"genre_name": ",".join(picked), "min_rating": 6.5},
-        )
-        cards = [c for c in _parse_cards(result) if c.get("Film", "").strip().lower() not in fav_titles]
-        return cards[:3]
-    except Exception as e:
-        logger.error("Push bildirimi için film üretme hatası", exc_info=True)
-        return []
-
 async def get_movie_card_by_title(title: str):
-    if not title:
-        return None
+    if not title: return None
     try:
-        # Hata Düzeltmesi 3: "year" parametresi eklendi
         result = await ctx.session.call_tool("get_movie_card", {"title": title, "year": 0})
         cards = _parse_cards(result)
         return cards[0] if cards else None
-    except Exception as e:
-        logger.error(f"Film kartı getirme hatası (title={title})", exc_info=True)
+    except Exception:
         return None
+
+async def generate_and_save_recommendation_task(user_id: int):
+    try:
+        persona = await get_user_persona(user_id)
+        if not persona: return
+            
+        favs_dict = await get_user_favorites(user_id)
+        fav_titles = [f["Film"] for f in favs_dict.get("favorites", [])][:5]
+        
+        async with ctx.db_pool.acquire() as conn:
+            rows = await conn.fetch("SELECT title FROM recommendations WHERE user_id = $1 ORDER BY created_at DESC LIMIT 30", user_id)
+            past_recs = [r["title"].lower().strip() for r in rows if r["title"]]
+        
+        res = await generate_push_message(persona, fav_titles, past_recs)
+        if not res: return
+        message_text, movie_title = res
+        
+        if movie_title and movie_title.lower().strip() in past_recs: return
+        
+        movie_id = None
+        if movie_title:
+            card = await get_movie_card_by_title(movie_title)
+            if card:
+                movie_id = str(card.get("movie_id"))
+                movie_title = card.get("Film", movie_title)
+        
+        if movie_id and movie_title and message_text:
+            async with ctx.db_pool.acquire() as conn:
+                await conn.execute("INSERT INTO recommendations (user_id, movie_id, title, message) VALUES ($1, $2, $3, $4)", user_id, movie_id, movie_title, message_text)
+    except Exception:
+        pass
+
+async def profile_and_recommendation_workflow(user_id: int):
+    await profile_update_task(user_id)
+    await generate_and_save_recommendation_task(user_id)
 
 async def send_random_notifications():
     try:
@@ -876,41 +590,26 @@ async def send_random_notifications():
             records = await conn.fetch(
                 """
                 SELECT DISTINCT ON (r.user_id) r.id, r.user_id, r.movie_id, r.title, r.message, u.expo_push_token 
-                FROM recommendations r
-                JOIN users u ON r.user_id = u.id
+                FROM recommendations r JOIN users u ON r.user_id = u.id
                 WHERE r.is_pushed = false AND u.expo_push_token IS NOT NULL
-                ORDER BY r.user_id, r.created_at DESC 
-                LIMIT 50
+                ORDER BY r.user_id, r.created_at DESC LIMIT 50
                 """
             )
-            
-            if not records:
-                return
-
             for row in records:
                 try:
                     card = await get_movie_card_by_title(row["title"])
-                    recommended_movies = [card] if card else []
-                    
                     msg = PushMessage(
                         to=row["expo_push_token"],
                         title="Senin İçin Bir Film Buldum 🍿",
                         body=row["message"],
-                        data={"type": "movie_recommendation", "movies": recommended_movies},
+                        data={"type": "movie_recommendation", "movies": [card] if card else []},
                     )
                     await asyncio.to_thread(PushClient().publish, msg)
-                    
-                    await conn.execute(
-                        "UPDATE recommendations SET is_pushed = true WHERE id = $1",
-                        row["id"]
-                    )
-                    logger.info(f"Hazır bildirim gönderildi ve db güncellendi: {row['user_id']}")
-                except Exception as e:
-                    logger.error(f"Tekil bildirim gönderme hatası (id={row['id']})", exc_info=True)
-                    
-    except Exception as e:
-        logger.error("Zamanlayıcı bildirim döngüsü hatası", exc_info=True)
-
+                    await conn.execute("UPDATE recommendations SET is_pushed = true WHERE id = $1", row["id"])
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     uvicorn.run(

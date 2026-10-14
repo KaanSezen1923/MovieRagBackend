@@ -249,31 +249,43 @@ async def similar(media_type: MediaType, item_id: int):
     results = data.get("results") or (await tmdb(f"/{media_type}/{item_id}/similar", ttl=3600)).get("results", [])
     return {"results": cards(results[:18], media_type)}
 
-@router.get("/catalog/person/{person_id}")
+# DİKKAT: /catalog değil sadece /person yazıyoruz (router prefix'i zaten /catalog ekliyor)
+# Ve bu fonksiyonu @router.get("/{media_type}/{item_id}") satırından DAHA YUKARIYA koyun.
+@router.get("/person/{person_id}")
 async def get_person_details_and_credits(person_id: int):
-    """
-    Oyuncunun detaylarını (biyografi, fotoğraf) ve 
-    oynadığı tüm film/dizileri (cast credits) tek seferde döner.
-    """
+    # catalog.py dosyanızın en başında TMDB anahtarı nasıl tanımlıysa onu kullanın:
+    # Örneğin: TMDB_API_KEY = os.getenv("TMDB_API_KEY")
+    api_key = os.getenv("TMDB_API_KEY")
+    token = os.getenv("TMDB_READ_ACCESS_TOKEN")
+
+    headers = {}
+    params = {"language": "tr-TR"}
+
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    elif api_key:
+        params["api_key"] = api_key
+
     async with httpx.AsyncClient() as client:
-        # 1. Oyuncu bilgileri
+        # 1. Oyuncu Detayları
         person_res = await client.get(
-            f"https://api.themoviedb.org/3/person/{person_id}?language=tr-TR",
-            headers={"Authorization": f"Bearer {os.getenv('TMDB_READ_ACCESS_TOKEN')}"}
+            f"https://api.themoviedb.org/3/person/{person_id}",
+            params=params,
+            headers=headers
         )
         if person_res.status_code != 200:
             raise HTTPException(status_code=person_res.status_code, detail="Oyuncu bulunamadı.")
-        
+
         person_data = person_res.json()
 
-        # 2. Oynadığı tüm film ve diziler
+        # 2. Oyuncunun Oynadığı Tüm Film ve Diziler
         credits_res = await client.get(
-            f"https://api.themoviedb.org/3/person/{person_id}/combined_credits?language=tr-TR",
-            headers={"Authorization": f"Bearer {os.getenv('TMDB_READ_ACCESS_TOKEN')}"}
+            f"https://api.themoviedb.org/3/person/{person_id}/combined_credits",
+            params=params,
+            headers=headers
         )
         credits_data = credits_res.json() if credits_res.status_code == 200 else {}
 
-        # Oynadığı yapımları popülerliğe göre sıralayalım
         cast_items = credits_data.get("cast", [])
         cast_items.sort(key=lambda x: x.get("popularity", 0), reverse=True)
 
@@ -285,5 +297,5 @@ async def get_person_details_and_credits(person_id: int):
             "known_for_department": person_data.get("known_for_department"),
             "birthday": person_data.get("birthday"),
             "place_of_birth": person_data.get("place_of_birth"),
-            "credits": cast_items  # Oynadığı tüm filmler ve diziler
+            "credits": cast_items
         }

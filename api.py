@@ -5,6 +5,7 @@ import asyncio
 import tempfile
 import random
 from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Literal, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Depends, Request, Query
 from fastapi.responses import JSONResponse
@@ -22,7 +23,7 @@ import httpx
 from shared import ctx, chat_statuses, MCPSessionPool
 from client import (
     get_ollama_tools, generate_user_profile, generate_user_suggestions,
-    generate_push_message, app as graph_app,
+    build_push_recommendation, app as graph_app,
 )
 from auth import (
     CurrentUser, create_access_token, get_current_user,
@@ -58,6 +59,15 @@ DB_POOL_MIN_SIZE = int(os.getenv("DB_POOL_MIN_SIZE", "2"))
 DB_POOL_MAX_SIZE = int(os.getenv("DB_POOL_MAX_SIZE", "10"))
 MCP_POOL_SIZE = int(os.getenv("MCP_POOL_SIZE", "3"))
 
+# --- YENİ: KULLANICI BAZLI KİLİT SÖZLÜĞÜ (LOCKS) ---
+user_workflow_locks = {}
+
+def get_user_lock(user_id: int) -> asyncio.Lock:
+    if user_id not in user_workflow_locks:
+        user_workflow_locks[user_id] = asyncio.Lock()
+    return user_workflow_locks[user_id]
+
+
 class FavoriteRequest(BaseModel):
     movie_id: str
     title: str
@@ -86,6 +96,26 @@ def _mcp_env() -> dict:
     keys = ["AUTH_KEY", "NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"]
     return {k: os.getenv(k) for k in keys if os.getenv(k)}
 
+_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS recommendation_feedback (
+    id          BIGSERIAL PRIMARY KEY,
+    user_id     BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    movie_id    TEXT        NOT NULL,
+    title       TEXT,
+    source      TEXT        NOT NULL CHECK (source IN ('chat', 'push')),
+    feedback    SMALLINT    CHECK (feedback IN (-1, 1)),   -- 1 = like, -1 = dislike, NULL = sadece gösterildi
+    session_id  TEXT,
+    shown_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    feedback_at TIMESTAMPTZ,
+    UNIQUE (user_id, movie_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_rec_feedback_user ON recommendation_feedback (user_id, feedback);
+"""
+
+async def _ensure_schema() -> None:
+    async with ctx.db_pool.acquire() as conn:
+        await conn.execute(_SCHEMA_SQL)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     server_params = StdioServerParameters(
@@ -106,6 +136,7 @@ async def lifespan(app: FastAPI):
             max_size=DB_POOL_MAX_SIZE,
         )
         logger.info(f"Postgres pool hazır (min={DB_POOL_MIN_SIZE}, max={DB_POOL_MAX_SIZE}).")
+        await _ensure_schema()
 
         mcp_pool = MCPSessionPool(pool_size=MCP_POOL_SIZE)
         await mcp_pool.start(server_params, get_ollama_tools)
@@ -333,7 +364,7 @@ async def chat(
 
     initial_state = {
         "prompt": request.prompt,
-        "persona": user_persona or "Film sever bir kullanıcı.",
+        "persona": user_persona or "{}",
         "messages": chat_history + [{"role": "user", "content": request.prompt}],
         "tools": ctx.tools,
         "intent": "",
@@ -361,10 +392,98 @@ async def chat(
         await conn.execute("INSERT INTO chat_history (user_id, role, content, session_id) VALUES ($1, $2, $3, $4)", current_user.user_id, "assistant", answer, request.session_id)
         msg_count = await conn.fetchval("SELECT COUNT(*) FROM chat_history WHERE user_id = $1", current_user.user_id)
     
+    await _log_chat_impressions(current_user.user_id, request.session_id, answer)
+
+    # Tetikleyici, her 5 mesajda çalışır. Ancak artık görev içinde Kilit mekanizması var.
     if msg_count > 0 and msg_count % 5 == 0:
         background_tasks.add_task(profile_and_recommendation_workflow, current_user.user_id)
 
     return {"answer": answer, "tool_calls": tool_calls, "tool_results": tool_results}
+
+# --- ÖNERİ GERİ BİLDİRİMİ (LIKE / DISLIKE) ---
+
+class FeedbackRequest(BaseModel):
+    movie_id: str
+    feedback: Literal["like", "dislike", "clear"]
+    source: Literal["chat", "push"] = "chat"
+    title: Optional[str] = None
+    session_id: Optional[str] = None
+
+_FEEDBACK_VALUE = {"like": 1, "dislike": -1, "clear": None}
+
+async def _log_chat_impressions(user_id: int, session_id: str, answer: str) -> None:
+    """Sohbette gösterilen filmleri 'gösterildi' olarak kaydeder (like oranının paydası). Asla chat'i bozmaz."""
+    try:
+        data = json.loads(answer)
+        if not isinstance(data, dict) or data.get("type") != "movie_list":
+            return
+        rows = [(user_id, str(m["movie_id"]), m.get("Film"), session_id)
+                for m in data.get("movies", []) if m.get("movie_id")]
+        if not rows:
+            return
+        async with ctx.db_pool.acquire() as conn:
+            await conn.executemany(
+                """INSERT INTO recommendation_feedback (user_id, movie_id, title, source, session_id)
+                   VALUES ($1, $2, $3, 'chat', $4)
+                   ON CONFLICT (user_id, movie_id, source) DO NOTHING""",
+                rows,
+            )
+    except Exception:
+        logger.warning("Impression kaydı başarısız", exc_info=True)
+
+@app.post("/feedback")
+async def submit_feedback(req: FeedbackRequest, current_user: CurrentUser = Depends(get_current_user)):
+    value = _FEEDBACK_VALUE[req.feedback]
+    try:
+        async with ctx.db_pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO recommendation_feedback
+                       (user_id, movie_id, title, source, feedback, session_id, feedback_at)
+                   VALUES ($1, $2, $3, $4, $5::smallint, $6, CASE WHEN $5::smallint IS NULL THEN NULL ELSE now() END)
+                   ON CONFLICT (user_id, movie_id, source) DO UPDATE
+                   SET feedback    = EXCLUDED.feedback,
+                       feedback_at = EXCLUDED.feedback_at,
+                       title       = COALESCE(recommendation_feedback.title, EXCLUDED.title)""",
+                current_user.user_id, req.movie_id, req.title, req.source, value, req.session_id,
+            )
+        return {"status": "success", "feedback": req.feedback}
+    except Exception:
+        logger.error("Feedback kaydı hatası", exc_info=True)
+        raise HTTPException(status_code=500, detail="Geri bildirim kaydedilemedi.")
+
+@app.get("/feedback/ids")
+async def get_feedback_ids(current_user: CurrentUser = Depends(get_current_user)):
+    """UI'ın sayfa yenilenince buton durumlarını geri yüklemesi için."""
+    async with ctx.db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT movie_id, feedback FROM recommendation_feedback WHERE user_id = $1 AND feedback IS NOT NULL",
+            current_user.user_id,
+        )
+    return {
+        "liked": [r["movie_id"] for r in rows if r["feedback"] == 1],
+        "disliked": [r["movie_id"] for r in rows if r["feedback"] == -1],
+    }
+
+@app.get("/feedback/stats")
+async def get_feedback_stats(current_user: CurrentUser = Depends(get_current_user)):
+    async with ctx.db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT source,
+                      COUNT(*)                              AS shown,
+                      COUNT(*) FILTER (WHERE feedback = 1)  AS likes,
+                      COUNT(*) FILTER (WHERE feedback = -1) AS dislikes
+               FROM recommendation_feedback WHERE user_id = $1 GROUP BY source""",
+            current_user.user_id,
+        )
+    out = {}
+    for r in rows:
+        rated = r["likes"] + r["dislikes"]
+        out[r["source"]] = {
+            "shown": r["shown"], "likes": r["likes"], "dislikes": r["dislikes"],
+            "like_rate": round(r["likes"] / rated, 3) if rated else None,   # oy verenler içinde
+            "like_per_shown": round(r["likes"] / r["shown"], 3) if r["shown"] else None,
+        }
+    return out
 
 @app.get("/sessions")
 async def get_sessions(current_user: CurrentUser = Depends(get_current_user), limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)):
@@ -389,17 +508,6 @@ async def get_sessions(current_user: CurrentUser = Depends(get_current_user), li
     except Exception:
         raise HTTPException(status_code=500, detail="Oturumlar alınamadı.")
 
-@app.get("/chat/{session_id}")
-async def get_chat_history(session_id: str, current_user: CurrentUser = Depends(get_current_user), limit: int = Query(default=100), offset: int = Query(default=0)):
-    try:
-        async with ctx.db_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT role, content FROM chat_history WHERE user_id = $1 AND session_id = $2 ORDER BY created_at ASC LIMIT $3 OFFSET $4", current_user.user_id, session_id, limit, offset)
-            total = await conn.fetchval("SELECT COUNT(*) FROM chat_history WHERE user_id = $1 AND session_id = $2", current_user.user_id, session_id)
-        history = [{"role": r["role"], "content": r["content"]} for r in rows]
-        return {"history": history, "total": total, "limit": limit, "offset": offset}
-    except Exception:
-        raise HTTPException(status_code=500, detail="Sohbet geçmişi alınamadı.")
-
 @app.get("/chat/suggestions")
 async def get_chat_suggestions(current_user: CurrentUser = Depends(get_current_user)):
     default_suggestions = ["Bilim kurgu filmi öner", "Nolan filmi öner", "Tim Burton filmi öner"]
@@ -417,6 +525,19 @@ async def get_chat_suggestions(current_user: CurrentUser = Depends(get_current_u
         return {"suggestions": suggestions}
     except Exception:
         return {"suggestions": default_suggestions}
+
+@app.get("/chat/{session_id}")
+async def get_chat_history(session_id: str, current_user: CurrentUser = Depends(get_current_user), limit: int = Query(default=100), offset: int = Query(default=0)):
+    try:
+        async with ctx.db_pool.acquire() as conn:
+            rows = await conn.fetch("SELECT role, content FROM chat_history WHERE user_id = $1 AND session_id = $2 ORDER BY created_at ASC LIMIT $3 OFFSET $4", current_user.user_id, session_id, limit, offset)
+            total = await conn.fetchval("SELECT COUNT(*) FROM chat_history WHERE user_id = $1 AND session_id = $2", current_user.user_id, session_id)
+        history = [{"role": r["role"], "content": r["content"]} for r in rows]
+        return {"history": history, "total": total, "limit": limit, "offset": offset}
+    except Exception:
+        raise HTTPException(status_code=500, detail="Sohbet geçmişi alınamadı.")
+
+
 
 @app.delete("/chat/{session_id}")
 async def delete_session(session_id: str, current_user: CurrentUser = Depends(get_current_user)):
@@ -516,8 +637,8 @@ async def update_push_token(req: TokenRequest, current_user: CurrentUser = Depen
 @app.get("/recommendations")
 async def get_user_recommendations(current_user: CurrentUser = Depends(get_current_user)):
     async with ctx.db_pool.acquire() as conn:
-        rows = await conn.fetch("SELECT id, title, message, created_at, is_read FROM recommendations WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50", current_user.user_id)
-    return [{"id": r["id"], "title": r["title"], "body": r["message"], "date": r["created_at"], "is_read": r["is_read"]} for r in rows]
+        rows = await conn.fetch("SELECT id, movie_id, title, message, created_at, is_read FROM recommendations WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50", current_user.user_id)
+    return [{"id": r["id"], "movie_id": r["movie_id"], "title": r["title"], "body": r["message"], "date": r["created_at"], "is_read": r["is_read"]} for r in rows]
 
 @app.patch("/recommendations/read")
 async def mark_recommendations_read(current_user: CurrentUser = Depends(get_current_user)):
@@ -527,15 +648,40 @@ async def mark_recommendations_read(current_user: CurrentUser = Depends(get_curr
 
 async def profile_update_task(user_id: int):
     try:
+        # 1. Eski profili getir (Yoksa boş JSON)
+        current_profile = await get_user_persona(user_id)
+        if not current_profile:
+            current_profile = "{}"
+
+        # 2. Sohbet geçmişini getir
         history_list = await get_recent_chats(user_id, limit=10)
         history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_list])
+        
+        # 3. Favorileri getir
         favorites_dict = await get_user_favorites(user_id)
         fav_items = [f"{f['Film']} ({f['Türler'] or ''})" for f in favorites_dict.get("favorites", [])]
         favorites_text = ", ".join(fav_items) if fav_items else "Henüz favori eklenmemiş."
 
-        new_profile = await generate_user_profile(history_text, favorites_text)
+        # 4. Geri Bildirimleri (Like/Dislike) getir
         async with ctx.db_pool.acquire() as conn:
-            await conn.execute("UPDATE user_profiles SET persona_summary = $1, last_updated = CURRENT_TIMESTAMP WHERE user_id = $2", new_profile, user_id)
+            feedbacks = await conn.fetch(
+                "SELECT title, feedback FROM recommendation_feedback WHERE user_id = $1 AND feedback IS NOT NULL ORDER BY feedback_at DESC LIMIT 15", 
+                user_id
+            )
+        feedback_text = "\n".join([f"{f['title']}: {'Beğendi (Like)' if f['feedback'] == 1 else 'Beğenmedi (Dislike)'}" for f in feedbacks])
+        
+        # Sohbet ve geri bildirimleri tek bir metinde birleştir
+        combined_interactions = f"SOHBETLER:\n{history_text}\n\nGERİ BİLDİRİMLER (LIKE/DISLIKE):\n{feedback_text}"
+
+        # 5. Yeni profili üret (Decay ve ağırlıklandırma LLM tarafından yapılır)
+        new_profile_json = await generate_user_profile(combined_interactions, favorites_text, current_profile)
+        
+        # 6. Veritabanına kaydet
+        async with ctx.db_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE user_profiles SET persona_summary = $1, last_updated = CURRENT_TIMESTAMP WHERE user_id = $2", 
+                new_profile_json, user_id
+            )
     except Exception as e:
         logger.error(f"Profilleme hatası (user_id={user_id})", exc_info=True)
 
@@ -553,42 +699,59 @@ async def get_movie_card_by_title(title: str):
         cards = _parse_cards(result)
         return cards[0] if cards else None
     except Exception:
+        logger.warning(f"Film kartı alınamadı: {title!r}", exc_info=True)
         return None
 
 async def generate_and_save_recommendation_task(user_id: int):
     try:
         persona = await get_user_persona(user_id)
-        if not persona: return
-            
-        favs_dict = await get_user_favorites(user_id)
-        fav_titles = [f["Film"] for f in favs_dict.get("favorites", [])][:5]
-        
-        async with ctx.db_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT title FROM recommendations WHERE user_id = $1 ORDER BY created_at DESC LIMIT 30", user_id)
-            past_recs = [r["title"].lower().strip() for r in rows if r["title"]]
-        
-        res = await generate_push_message(persona, fav_titles, past_recs)
-        if not res: return
-        message_text, movie_title = res
-        
-        if movie_title and movie_title.lower().strip() in past_recs: return
-        
-        movie_id = None
-        if movie_title:
-            card = await get_movie_card_by_title(movie_title)
-            if card:
-                movie_id = str(card.get("movie_id"))
-                movie_title = card.get("Film", movie_title)
-        
-        if movie_id and movie_title and message_text:
-            async with ctx.db_pool.acquire() as conn:
-                await conn.execute("INSERT INTO recommendations (user_id, movie_id, title, message) VALUES ($1, $2, $3, $4)", user_id, movie_id, movie_title, message_text)
-    except Exception:
-        pass
+        if not persona:
+            logger.info(f"Öneri atlandı (user={user_id}): persona yok")
+            return
 
+        favs = (await get_user_favorites(user_id)).get("favorites", [])
+        async with ctx.db_pool.acquire() as conn:
+            rows = await conn.fetch("SELECT movie_id, title FROM recommendations WHERE user_id = $1", user_id)
+            disliked = await conn.fetch(
+                "SELECT movie_id, title FROM recommendation_feedback WHERE user_id = $1 AND feedback = -1", user_id)
+
+        # Favoriler + tüm geçmiş öneriler: id VE başlık ile dışla
+        exclude_ids = ({str(r["movie_id"]) for r in rows if r["movie_id"]} | {str(f["movie_id"]) for f in favs}
+                       | {str(d["movie_id"]) for d in disliked})
+        exclude_titles = ({r["title"].lower().strip() for r in rows if r["title"]}
+                          | {f["Film"].lower().strip() for f in favs if f["Film"]}
+                          | {d["title"].lower().strip() for d in disliked if d["title"]})
+
+        rec = await build_push_recommendation(user_id, persona, favs, exclude_ids, exclude_titles)
+        if not rec:
+            return
+
+        async with ctx.db_pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO recommendations (user_id, movie_id, title, message, reason)
+                   SELECT $1::bigint, $2::text, $3::text, $4::text, $5::text
+                   WHERE NOT EXISTS (SELECT 1 FROM recommendations WHERE user_id = $1::bigint AND movie_id = $2::text)""",
+                user_id, rec["movie_id"], rec["title"], rec["message"], rec["reason"],
+            )
+        logger.info(f"Öneri kaydedildi (user={user_id}): {rec['title']!r} ({rec['reason']})")
+    except Exception:
+        logger.error(f"Öneri üretme hatası (user={user_id})", exc_info=True)
+
+# --- KİLİT MEKANİZMASI ENTEGRE EDİLMİŞ İŞ AKIŞI ---
 async def profile_and_recommendation_workflow(user_id: int):
-    await profile_update_task(user_id)
-    await generate_and_save_recommendation_task(user_id)
+    lock = get_user_lock(user_id)
+    
+    # Eğer kilitliyse (yani bu kullanıcının önceki profilleme görevi hala sürüyorsa) çıkış yap.
+    if lock.locked():
+        logger.info(f"Kullanıcı (id={user_id}) için profilleme görevi zaten çalışıyor, Kilit atlandı.")
+        return
+
+    async with lock:
+        try:
+            await profile_update_task(user_id)
+            await generate_and_save_recommendation_task(user_id)
+        except Exception:
+            logger.error(f"Workflow çalıştırılırken hata (user={user_id})", exc_info=True)
 
 async def send_random_notifications():
     try:
@@ -613,9 +776,9 @@ async def send_random_notifications():
                     await asyncio.to_thread(PushClient().publish, msg)
                     await conn.execute("UPDATE recommendations SET is_pushed = true WHERE id = $1", row["id"])
                 except Exception:
-                    pass
+                    logger.error(f"Push gönderilemedi (rec_id={row['id']})", exc_info=True)
     except Exception:
-        pass
+        logger.error("Bildirim döngüsü hatası", exc_info=True)
 
 if __name__ == "__main__":
     uvicorn.run(

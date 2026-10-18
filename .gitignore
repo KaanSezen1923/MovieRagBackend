@@ -31,3 +31,4 @@ htmlcov/
 
 # Test reports
 test_raporu_*.json
+results.json

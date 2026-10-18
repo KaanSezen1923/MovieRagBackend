@@ -21,6 +21,7 @@ DÜZELTİLEN HATALAR:
 """
 import json
 import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
@@ -46,12 +47,19 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 neo4j_driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
 
+EMBED_HOST = os.getenv("OLLAMA_EMBED_HOST")  # varsayılan koyma; yoksa açıkça hata ver
+
+embeddings_model = None
 try:
     from langchain_ollama import OllamaEmbeddings
     from movie_common import EMBED_MODEL
-    embeddings_model = OllamaEmbeddings(model=EMBED_MODEL)
-except Exception:
-    embeddings_model = None
+    if not EMBED_HOST:
+        raise RuntimeError("OLLAMA_EMBED_HOST tanımlı değil")
+    _m = OllamaEmbeddings(model=EMBED_MODEL, base_url=EMBED_HOST)
+    _m.embed_query("ping")          # gerçek bağlantı testi
+    embeddings_model = _m
+except Exception as e:
+    print(f"Embedding modeli yüklenemedi: {e}", file=sys.stderr)
 
 mcp = FastMCP("TMDB Movie Explorer")
 
@@ -181,10 +189,11 @@ def _clip(text: str, n: int = 400) -> str:
 
 
 def lite_card(*, mid, title, year="", rating=None, votes=None, genres=(), overview="", poster=None,
-              director="", cast="", source="", score=None, relaxed=None) -> dict:
+              director="", cast="", source="", score=None, relaxed=None, media_type="movie") -> dict:
     """Ek API isteği gerektirmeyen HAFİF aday kartı. Anahtarlar tam kartla uyumlu."""
     card = {
         "movie_id": str(mid),
+        "media_type": media_type,
         "Film": title or "",
         "Director": director,
         "Cast": cast,
@@ -248,6 +257,7 @@ def fetch_movie_card(movie_id, fallback: dict | None = None) -> dict | None:
 
     return {
         "movie_id": str(d.get("id", movie_id)),
+        "media_type": "movie",
         "Film": d.get("title") or d.get("original_title") or fallback.get("title", ""),
         "Director": ", ".join(directors) or fallback.get("director", ""),
         "Cast": ", ".join(cast) or fallback.get("cast", ""),
@@ -529,6 +539,339 @@ def get_movie_card(title: str, year: int = 0) -> str:
 def enrich_movies(movie_ids: list[int]) -> str:
     """Seçilmiş filmlerin TAM kartlarını (fragman, platform, kadro) getirir. Verilen sıra korunur."""
     return json.dumps(cards_from_ids(list(movie_ids)), ensure_ascii=False)
+
+
+# ================================================================ DİZİ (TV) DESTEĞİ
+# Film araçlarının dizi karşılıkları. Kartlar film kartlarıyla AYNI anahtarları taşır
+# ("movie_id", "Film", "Director"...), ek olarak "media_type": "tv" ve dizi alanları içerir.
+SERIES_VECTOR_INDEX = os.getenv("SERIES_VECTOR_INDEX", "series_overview_index")
+SERIES_BAYES_M = 100          # dizilerin oy sayıları filmlerden düşük; filmdeki 500 onları haksız cezalandırır
+
+# TMDB'de DİZİ türleri filmlerden farklıdır: Action+Adventure -> 10759, SciFi+Fantasy -> 10765,
+# War -> 10768 ve Horror / Thriller / Romance / History / Music dizilerde YOKTUR.
+_TV_GENRES = {
+    "Action": 10759, "Aksiyon": 10759, "Adventure": 10759, "Macera": 10759,
+    "Animation": 16, "Animasyon": 16, "Comedy": 35, "Komedi": 35, "Crime": 80, "Suç": 80,
+    "Documentary": 99, "Belgesel": 99, "Drama": 18, "Dram": 18, "Family": 10751, "Aile": 10751,
+    "Fantasy": 10765, "Fantastik": 10765, "Science Fiction": 10765, "Sci-Fi": 10765, "Bilim Kurgu": 10765,
+    "Mystery": 9648, "Gizem": 9648, "War": 10768, "Savaş": 10768, "Western": 37,
+}
+TV_GENRE_LOOKUP = {norm(k): v for k, v in _TV_GENRES.items()}
+# Dizi türü olmayanlar -> anahtar kelime olarak aranır (örn. "Horror" -> keyword "horror")
+_TV_GENRE_AS_KEYWORD = {norm(k): v for k, v in {
+    "Horror": "horror", "Korku": "horror", "Thriller": "thriller", "Gerilim": "thriller",
+    "Romance": "romance", "Romantik": "romance", "History": "history", "Tarih": "history",
+    "Music": "music", "Müzik": "music"}.items()}
+
+
+def tv_genre_split(csv) -> tuple:
+    """'Horror, Science Fiction' -> ([10765], ['horror']): (dizi tür id'leri, anahtar kelimeye düşenler)."""
+    ids, kws = [], []
+    for g in (csv or "").split(","):
+        n = norm(g)
+        if n in TV_GENRE_LOOKUP:
+            if TV_GENRE_LOOKUP[n] not in ids:
+                ids.append(TV_GENRE_LOOKUP[n])
+        elif n in _TV_GENRE_AS_KEYWORD and _TV_GENRE_AS_KEYWORD[n] not in kws:
+            kws.append(_TV_GENRE_AS_KEYWORD[n])
+    return ids, kws
+
+
+@ttl_cache(ttl=3600)
+def get_series_id(title: str, year: int = 0):
+    params = {"query": title, "language": "en-US"}
+    if year:
+        params["first_air_date_year"] = year
+    try:
+        results = tmdb_get("/search/tv", **params).get("results", [])
+    except Exception:
+        return None
+    if not results:
+        return None
+    t = norm(title)
+    exact = [r for r in results if norm(r.get("name", "")) == t or norm(r.get("original_name", "")) == t]
+    return max(exact or results, key=lambda r: r.get("vote_count", 0))["id"]
+
+
+def _series_card_from_tmdb(r: dict, source: str, relaxed=None) -> dict:
+    tv_names = {v: k for k, v in {"Action & Adventure": 10759, "Animation": 16, "Comedy": 35, "Crime": 80,
+                                  "Documentary": 99, "Drama": 18, "Family": 10751, "Kids": 10762,
+                                  "Mystery": 9648, "News": 10763, "Reality": 10764,
+                                  "Sci-Fi & Fantasy": 10765, "Soap": 10766, "Talk": 10767,
+                                  "War & Politics": 10768, "Western": 37}.items()}
+    return lite_card(
+        mid=r["id"], title=r.get("name"), year=(r.get("first_air_date") or "")[:4],
+        rating=r.get("vote_average"), votes=r.get("vote_count"),
+        genres=[tv_names.get(g) for g in r.get("genre_ids", [])],
+        overview=r.get("overview"), poster=r.get("poster_path"),
+        source=source, relaxed=relaxed, media_type="tv")
+
+
+_SERIES_RETURN = """
+  movie.id AS id, movie.name AS title, movie.year AS year,
+  movie.vote_average AS rating, movie.vote_count AS votes,
+  movie.overview AS overview, movie.poster_path AS poster,
+  [(movie)-[:HAS_GENRE]->(g:Genre) | g.name] AS genres,
+  [(movie)<-[:CREATED]-(d:Person) | d.name] AS director,
+  [(movie)<-[:ACTED_IN]-(c:Person) | c.name] AS cast
+"""
+_WR_SERIES = _WR      # aynı formül; m parametresi çağrıda SERIES_BAYES_M olarak verilir
+
+
+def _run_series_graph(cypher: str, source: str, **params) -> list:
+    params.setdefault("m", SERIES_BAYES_M)
+    params.setdefault("c", BAYES_C)
+    with neo4j_driver.session(database=NEO4J_DATABASE) as session:
+        rows = [dict(r) for r in session.run(cypher, **params)]
+    return [
+        lite_card(
+            mid=r["id"], title=r["title"], year=r.get("year") or "", rating=r.get("rating"),
+            votes=r.get("votes"), genres=r.get("genres") or [], overview=r.get("overview"),
+            poster=r.get("poster"), director=", ".join(r.get("director") or []),
+            cast=", ".join((r.get("cast") or [])[:4]), source=source, media_type="tv",
+            score=r.get("score") if r.get("score") is not None else r.get("wr"))
+        for r in rows
+    ]
+
+
+def fetch_series_card(series_id, fallback: dict | None = None) -> dict | None:
+    """Dizi için TAM kart (fragman, platform, kadro, sezon/bölüm). Yalnızca son seçilenler için çağrılır."""
+    fallback = fallback or {}
+    try:
+        d = tmdb_get(f"/tv/{series_id}", language="tr-TR",
+                     append_to_response="videos,aggregate_credits,watch/providers",
+                     include_video_language="en,tr,null")
+    except Exception:
+        return None
+    overview = d.get("overview") or fallback.get("overview")
+    if not overview:
+        try:
+            overview = tmdb_get(f"/tv/{series_id}", language="en-US").get("overview")
+        except Exception:
+            overview = None
+    creators = [c["name"] for c in d.get("created_by", [])]
+    cast = [c["name"] for c in d.get("aggregate_credits", {}).get("cast", [])[:4]]
+    tr = d.get("watch/providers", {}).get("results", {}).get("TR", {})
+    flat = [p["provider_name"] for p in tr.get("flatrate", [])]
+    rentbuy = sorted({p["provider_name"] for k in ("rent", "buy") for p in tr.get(k, [])})
+    if flat:
+        platform = ", ".join(flat)
+    elif rentbuy:
+        platform = "Kiralık/satın alınabilir: " + ", ".join(rentbuy[:4])
+    else:
+        platform = "Abonelik platformunda yok"
+    poster = d.get("poster_path") or fallback.get("poster_path")
+    return {
+        "movie_id": str(d.get("id", series_id)),
+        "media_type": "tv",
+        "Film": d.get("name") or d.get("original_name") or fallback.get("title", ""),
+        "Director": ", ".join(creators) or fallback.get("director", ""),     # dizide: yaratıcı(lar)
+        "Cast": ", ".join(cast) or fallback.get("cast", ""),
+        "Yıl": (d.get("first_air_date") or "")[:4],
+        "TMDB Puanı": f"{d.get('vote_average', 0):.1f}",
+        "vote_count": int(d.get("vote_count") or 0),
+        "Türler": ", ".join(g["name"] for g in d.get("genres", [])),
+        "Özet": _clip(overview) or "Özet bulunamadı.",
+        "Poster": f"https://image.tmdb.org/t/p/w500{poster}" if poster else "",
+        "Fragman": _pick_trailer(d.get("videos", {}).get("results", [])),
+        "Şu Anki Platform(lar)": platform,
+        "Neden Önerildi": "",
+        "Sezon Sayısı": d.get("number_of_seasons"),
+        "Bölüm Sayısı": d.get("number_of_episodes"),
+        "Durum": d.get("status", ""),
+    }
+
+
+@mcp.tool()
+@ttl_cache(ttl=1800)
+def search_series_by_filters(
+    genre_name: str = None,
+    exclude_genres: str = None,
+    keyword: str = None,
+    min_rating: float = 0.0,
+    max_rating: float = 10.0,
+    year_from: int = 0,
+    year_to: int = 0,
+    min_votes: int = 50,
+    sort_by: str = "vote_average.desc",
+    only_streamable: bool = False,
+    limit: int = DEFAULT_LIMIT,
+) -> str:
+    """
+    TMDB canlı DİZİ araması (hafif aday kartları). Oyuncu/yaratıcı filtresi YOKTUR (TMDB dizilerde desteklemez);
+    onlar için search_series_in_graph kullan.
+    genre_name: virgülle ayrılmış türler. Dizilerde Horror/Thriller/Romance/History/Music türü yoktur;
+    bunlar otomatik anahtar kelime aramasına çevrilir. year_from/year_to ilk yayın yılına göredir.
+    """
+    params = {"include_adult": "false", "language": "en-US", "sort_by": sort_by,
+              "vote_count.gte": max(int(min_votes), 1)}
+    incl, kw_from_genre = tv_genre_split(genre_name)
+    excl, _ = tv_genre_split(exclude_genres)
+    if incl:
+        params["with_genres"] = ",".join(map(str, incl))
+    if excl:
+        params["without_genres"] = "|".join(map(str, excl))
+    kid = get_keyword_id(keyword or (kw_from_genre[0] if kw_from_genre else "")) if (keyword or kw_from_genre) else None
+    if kid:
+        params["with_keywords"] = kid
+    if min_rating > 0:
+        params["vote_average.gte"] = min_rating
+    if max_rating < 10:
+        params["vote_average.lte"] = max_rating
+    if year_from:
+        params["first_air_date.gte"] = f"{year_from}-01-01"
+    if year_to:
+        params["first_air_date.lte"] = f"{year_to}-12-31"
+    if only_streamable:
+        params.update(watch_region="TR", with_watch_monetization_types="flatrate")
+
+    def fetch(p):
+        out = []
+        for page in (1, 2):
+            if len(out) >= limit:
+                break
+            try:
+                res = tmdb_get("/discover/tv", page=page, **p).get("results", [])
+            except Exception:
+                break
+            out.extend(res)
+            if len(res) < 20:
+                break
+        return out
+
+    relaxed = []
+    series = fetch(params)
+    if not series and kid:
+        params.pop("with_keywords", None)
+        relaxed.append("keyword")
+        series = fetch(params)
+    if not series and len(incl) > 1:
+        params["with_genres"] = "|".join(map(str, incl))
+        relaxed.append("genres_and_to_or")
+        series = fetch(params)
+    return json.dumps([_series_card_from_tmdb(s, "tmdb_filter", relaxed or None) for s in series[:limit]],
+                      ensure_ascii=False)
+
+
+@mcp.tool()
+def search_series_in_graph(category: str, search_value: str, limit: int = DEFAULT_LIMIT,
+                           min_votes: int = 30) -> str:
+    """
+    Yerel Neo4j grafında DİZİ araması (hızlı, hafif kartlar).
+    category: 'Director' (dizinin YARATICISI) | 'Actor' | 'Genre' | 'Keyword' | 'Similar'.
+    """
+    val = norm(search_value or "")
+    gids = tv_genre_split(search_value)[0] if category == "Genre" else []
+    heads = {
+        "Director": "MATCH (p:Person)-[:CREATED]->(movie:Series) WHERE p.name_norm CONTAINS $val "
+                    "AND movie.vote_count >= $min_votes WITH DISTINCT movie",
+        "Actor": "MATCH (p:Person)-[:ACTED_IN]->(movie:Series) WHERE p.name_norm CONTAINS $val "
+                 "AND movie.vote_count >= $min_votes WITH DISTINCT movie",
+        "Keyword": "MATCH (movie:Series)-[:HAS_KEYWORD]->(k:Keyword) WHERE k.name_norm CONTAINS $val "
+                   "AND movie.vote_count >= $min_votes WITH DISTINCT movie",
+        "Genre": "MATCH (movie:Series)-[:HAS_GENRE]->(g:Genre) WHERE g.id IN $gids "
+                 "AND movie.vote_count >= $min_votes "
+                 "WITH movie, count(DISTINCT g) AS n WHERE n = size($gids) WITH movie",
+        "Similar": "MATCH (ref:Series) WHERE ref.name_norm = $val OR ref.original_name_norm = $val "
+                   "WITH ref ORDER BY ref.vote_count DESC LIMIT 1 "
+                   "MATCH (ref)-[:SIMILAR_TO]->(movie:Series) WHERE movie.overview IS NOT NULL "
+                   "WITH DISTINCT movie",
+    }
+    head = heads.get(category)
+    if not head or (category == "Genre" and not gids):
+        return "[]"
+    cypher = f"{head} RETURN {_SERIES_RETURN}, {_WR_SERIES} AS wr ORDER BY wr DESC LIMIT $limit"
+    try:
+        cards = _run_series_graph(cypher, f"graph_series_{category.lower()}", val=val, gids=gids,
+                                  min_votes=min_votes, limit=limit)
+    except Exception as e:
+        return f"Dizi graf arama hatası: {e}"
+    return json.dumps(cards, ensure_ascii=False)
+
+
+@mcp.tool()
+def search_series_semantically(
+    semantic_query: str,
+    exclude_genres: str = None,
+    min_rating: float = 0.0,
+    max_rating: float = 10.0,
+    year_from: int = 0,
+    year_to: int = 0,
+    min_votes: int = 30,
+    limit: int = DEFAULT_LIMIT,
+) -> str:
+    """
+    DİZİler için anlamsal (vektör) arama: tema, atmosfer, olay örgüsü. semantic_query İNGİLİZCE olmalı.
+    """
+    if not embeddings_model:
+        return "Semantik arama modeli aktif değil."
+    try:
+        vec = embeddings_model.embed_query(QUERY_PREFIX + semantic_query)
+        cypher = f"""
+        CALL db.index.vector.queryNodes('{SERIES_VECTOR_INDEX}', $k, $vec) YIELD node AS movie, score
+        WHERE movie.vote_count >= $min_votes
+          AND movie.vote_average >= $min_rating AND movie.vote_average <= $max_rating
+          AND ($year_from = 0 OR movie.year >= $year_from)
+          AND ($year_to = 0 OR movie.year <= $year_to)
+          AND NOT EXISTS {{ MATCH (movie)-[:HAS_GENRE]->(x:Genre) WHERE x.id IN $excl }}
+        RETURN {_SERIES_RETURN}, score
+        ORDER BY score DESC LIMIT $limit
+        """
+        cards = _run_series_graph(cypher, "semantic_series", vec=vec, k=150, min_votes=min_votes,
+                                  min_rating=min_rating, max_rating=max_rating, year_from=year_from,
+                                  year_to=year_to, excl=tv_genre_split(exclude_genres)[0], limit=limit)
+    except Exception as e:
+        return f"Dizi semantik arama hatası: {e}"
+    return json.dumps(cards, ensure_ascii=False)
+
+
+@mcp.tool()
+@ttl_cache(ttl=1800)
+def get_similar_series(series_title: str, year: int = 0, limit: int = DEFAULT_LIMIT) -> str:
+    """Verilen diziye benzer diziler: TMDB 'recommendations' + dizinin kendi embedding komşuları."""
+    sid = get_series_id(series_title, year)
+    if not sid:
+        return "[]"
+    out, seen = [], {str(sid)}
+    try:
+        recs = tmdb_get(f"/tv/{sid}/recommendations", language="en-US").get("results", []) \
+            or tmdb_get(f"/tv/{sid}/similar", language="en-US").get("results", [])
+        for r in recs:
+            c = _series_card_from_tmdb(r, "tmdb_rec")
+            if c["movie_id"] not in seen:
+                seen.add(c["movie_id"]); out.append(c)
+    except Exception:
+        pass
+    try:
+        cypher = f"""
+        MATCH (ref:Series {{id: $id}}) WHERE ref.embedding IS NOT NULL
+        CALL db.index.vector.queryNodes('{SERIES_VECTOR_INDEX}', $k, ref.embedding) YIELD node AS movie, score
+        WHERE movie.id <> $id AND movie.vote_count >= 30
+        RETURN {_SERIES_RETURN}, score
+        ORDER BY score DESC LIMIT $limit
+        """
+        for c in _run_series_graph(cypher, "vector_neighbor_series", id=sid, k=60, limit=limit):
+            if c["movie_id"] not in seen:
+                seen.add(c["movie_id"]); out.append(c)
+    except Exception:
+        pass
+    return json.dumps(out[: limit * 2], ensure_ascii=False)
+
+
+@mcp.tool()
+def get_series_card(title: str, year: int = 0) -> str:
+    """Adı belli tek bir dizinin TAM kartı (yaratıcı, oyuncular, puan, sezon/bölüm, fragman, platform)."""
+    sid = get_series_id(title, year)
+    card = fetch_series_card(sid) if sid else None
+    return json.dumps([card], ensure_ascii=False) if card else "[]"
+
+
+@mcp.tool()
+def enrich_series(series_ids: list[int]) -> str:
+    """Seçilmiş dizilerin TAM kartlarını getirir. Verilen sıra korunur."""
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        cards = list(ex.map(fetch_series_card, list(series_ids)))
+    return json.dumps([c for c in cards if c], ensure_ascii=False)
 
 
 if __name__ == "__main__":

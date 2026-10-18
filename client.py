@@ -34,6 +34,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field, ValidationError
+from uvicorn import logging
 from logger import logger
 from shared import GraphState, chat_statuses, ctx   # TEK GraphState tanımı (intent_data dahil)
 
@@ -65,6 +66,8 @@ MAX_MOVIES_PEOPLE = 8       # yönetmen/oyuncu filmografisi sorgularında
 CANDIDATES_TO_LLM = 15      # seçim aşamasına giden aday sayısı
 MIN_VOTES = 100             # normal sorgularda oy eşiği
 MIN_VOTES_OBSCURE = 20      # "kült / az bilinen / bağımsız" sorgularında
+SERIES_VOTE_FACTOR = 0.3    # dizilerin oy sayıları düşüktür: eşik = MIN_VOTES * bu çarpan
+SERIES_TV_SHARE = 0.4       # media_type='both' iken aday havuzunda dizi payı
 TOOL_TIMEOUT = 25           # sn
 RERANKER_BOOST = float(os.getenv("RERANKER_BOOST", "0.10"))   # reranker skor ağırlığı
 RERANKER_TOP_N = int(os.getenv("RERANKER_TOP_N", "50"))        # reranker'a giden max aday
@@ -120,6 +123,7 @@ class QuerySpec(BaseModel):
     semantic_query_en: Optional[str] = None   # tema/atmosfer, İngilizce, sayısal kısıtsız
     must_have: List[str] = Field(default_factory=list)   # kullanıcının sert kriterleri (seçimde kontrol edilir)
     obscure: bool = False                     # kült / az bilinen / düşük bütçe / düşük puanlı istiyor
+    media_type: str = "movie"                 # movie | tv | both
 
 
 EXTRACT_SYSTEM = """Sen bir film botunun sorgu analiz bileşenisin. Kullanıcı mesajından SADECE aşağıdaki JSON'u üret.
@@ -130,11 +134,13 @@ intent:
 - "recommendation": film önerisi / arama / filmografi.
 
 Alanlar (yoksa null ya da []):
+- media_type: "movie" (kullanıcı film/sinema dedi), "tv" (dizi/sezon/bölüm dedi), "both" (ikisini de istedi YA DA
+  hiçbirini belirtmedi: "bir şey öner", "bu akşam ne izlesem", "korku izlemek istiyorum"). Önceki konuşmadaki tercihi koru.
 - mood: SADECE kullanıcı duygusunu AÇIKÇA söylediyse ("canım sıkkın", "mutluyum", "yorgunum"). Merak, keşfetme isteği, tür ya da atmosfer tercihi ruh hali DEĞİLDİR -> null. Emin değilsen null.
 - include_genres: şu listeden: Action, Adventure, Animation, Comedy, Crime, Documentary, Drama, Family, Fantasy, History, Horror, Music, Mystery, Romance, Science Fiction, Thriller, War, Western. Yalnızca kullanıcı istediyse / çok belirginse.
 - exclude_genres: kullanıcının AÇIKÇA istemediği türler ("korku olmasın", "aksiyon barındırmayan", "süper kahraman olmasın" -> Action). Aynı listeden.
-- reference_movie: "X'e benzer" denen filmin ORİJİNAL (İngilizce) adı. Yalnızca kullanıcı bir film verip benzerini istiyorsa.
-- movie_title: intent=movie_info ise filmin orijinal adı.
+- reference_movie: "X'e benzer" denen film VEYA dizinin ORİJİNAL (İngilizce) adı. Yalnızca kullanıcı bir film verip benzerini istiyorsa.
+- movie_title: intent=movie_info ise filmin/dizinin orijinal adı.
 - director / actor: adı geçiyorsa.
 - min_rating / max_rating: YALNIZCA kullanıcı sayısal puan sınırı verdiyse (0-10). "5'in altında" -> max_rating=5. "8 üzeri" -> min_rating=8. Varsayılan değer UYDURMA.
 - year_from / year_to: dönem belirtildiyse ("1920'ler" -> 1920 ve 1929, "2000'ler" -> 2000 ve 2009).
@@ -180,6 +186,8 @@ def _clean_spec(d: dict) -> dict:
     if str(out.get("intent", "")).lower() not in ("general", "movie_info", "recommendation"):
         out["intent"] = "recommendation"
     out["intent"] = str(out["intent"]).lower()
+    mt = str(out.get("media_type") or "movie").strip().lower()
+    out["media_type"] = mt if mt in ("movie", "tv", "both") else "movie"
     out["obscure"] = bool(out.get("obscure")) and str(out.get("obscure")).lower() != "false"
     return out
 
@@ -235,8 +243,8 @@ def bayes(avg, votes, m=500, c=6.5) -> float:
     return (votes * avg + m * c) / (votes + m)
 
 
-def build_plan(spec: QuerySpec, prompt: str, user_id: Optional[int] = None) -> List[tuple]:
-    """Hangi araçlar hangi argümanlarla çalışacak? Deterministik; LLM karar vermez."""
+def _build_movie_plan(spec: QuerySpec, prompt: str, user_id: Optional[int] = None) -> List[tuple]:
+    """FİLM araçları. Hangi araçlar hangi argümanlarla çalışacak? Deterministik; LLM karar vermez."""
     min_votes = MIN_VOTES_OBSCURE if spec.obscure else MIN_VOTES
     excl = ",".join(spec.exclude_genres)
     rng = {"min_rating": spec.min_rating or 0.0, "max_rating": spec.max_rating if spec.max_rating is not None else 10.0,
@@ -280,6 +288,58 @@ def build_plan(spec: QuerySpec, prompt: str, user_id: Optional[int] = None) -> L
     return [(n, {k: v for k, v in a.items() if v is not None}) for n, a in plan]
 
 
+def _build_series_plan(spec: QuerySpec, prompt: str) -> List[tuple]:
+    """DİZİ araçları (film planının karşılığı). TMDB dizilerde oyuncu/yaratıcı filtresi olmadığı için
+    kişi sorguları Neo4j grafına gider."""
+    base = MIN_VOTES_OBSCURE if spec.obscure else MIN_VOTES
+    min_votes = max(5, int(base * SERIES_VOTE_FACTOR))
+    excl = ",".join(spec.exclude_genres)
+    rng = {"min_rating": spec.min_rating or 0.0, "max_rating": spec.max_rating if spec.max_rating is not None else 10.0,
+           "year_from": spec.year_from or 0, "year_to": spec.year_to or 0}
+    plan = []
+    if spec.reference_movie:
+        plan.append(("get_similar_series", {"series_title": spec.reference_movie}))
+    if spec.director:      # dizide 'yönetmen' yerine yaratıcı
+        plan.append(("search_series_in_graph", {"category": "Director", "search_value": spec.director, "min_votes": min_votes}))
+    if spec.actor:
+        plan.append(("search_series_in_graph", {"category": "Actor", "search_value": spec.actor, "min_votes": min_votes}))
+
+    if spec.include_genres or spec.exclude_genres or spec.min_rating is not None or spec.max_rating is not None \
+            or spec.year_from or spec.year_to:
+        args = {"min_votes": min_votes, **rng}
+        if spec.include_genres:
+            args["genre_name"] = ",".join(spec.include_genres)
+        if excl:
+            args["exclude_genres"] = excl
+        plan.append(("search_series_by_filters", {k: v for k, v in args.items() if v not in (None, 0, 0.0) or k == "max_rating"}))
+
+    if not (spec.director or spec.actor) or spec.semantic_query_en:
+        plan.append(("search_series_semantically", {
+            "semantic_query": spec.semantic_query_en or prompt,
+            "exclude_genres": excl or None, "min_votes": min_votes, **rng, "limit": 25}))
+    return [(n, {k: v for k, v in a.items() if v is not None}) for n, a in plan]
+
+
+def build_plan(spec: QuerySpec, prompt: str, user_id: Optional[int] = None) -> List[tuple]:
+    """media_type'a göre film ve/veya dizi araçlarını birleştirir."""
+    plan = []
+    if spec.media_type in ("movie", "both"):
+        plan += _build_movie_plan(spec, prompt, user_id)
+    if spec.media_type in ("tv", "both"):
+        plan += _build_series_plan(spec, prompt)
+    return plan
+
+
+def balance_media(ranked: List[dict], k: int, tv_share: float = SERIES_TV_SHARE) -> List[dict]:
+    """'both' sorgularında film/dizi dengesi: aday havuzunun en az ~%tv_share'i dizi olsun (varsa)."""
+    tv = [c for c in ranked if c.get("media_type") == "tv"]
+    mv = [c for c in ranked if c.get("media_type") != "tv"]
+    n_tv = min(len(tv), round(k * tv_share))
+    n_mv = min(len(mv), k - n_tv)
+    n_tv = min(len(tv), k - n_mv)
+    return sorted(tv[:n_tv] + mv[:n_mv], key=lambda c: c.get("_score", 0.0), reverse=True)
+
+
 def merge_candidates(result_lists: List[List[dict]]) -> List[dict]:
     """Kaynakları movie_id ile birleştir; her kaynaktaki sıradan Reciprocal Rank Fusion skoru üret."""
     by_id = {}
@@ -288,7 +348,8 @@ def merge_candidates(result_lists: List[List[dict]]) -> List[dict]:
             mid = str(c.get("movie_id") or "")
             if not mid:
                 continue
-            cur = by_id.setdefault(mid, {**c, "_rrf": 0.0, "_sources": []})
+            key = f"{c.get('media_type') or 'movie'}:{mid}"      # film 1399 ile dizi 1399 aynı şey DEĞİL
+            cur = by_id.setdefault(key, {**c, "_rrf": 0.0, "_sources": [], "_key": key})
             cur["_rrf"] += 1.0 / (60 + rank)
             cur["_sources"].append(c.get("source", ""))
             for k in ("Özet", "Türler", "Director", "Cast", "Poster", "TMDB Puanı"):
@@ -319,7 +380,8 @@ def hard_filter(cands: List[dict], spec: QuerySpec) -> List[dict]:
                 continue
             if spec.year_to and int(y) > spec.year_to:
                 continue
-        if c.get("vote_count", 0) < min_votes:
+        mv = max(5, int(min_votes * SERIES_VOTE_FACTOR)) if c.get("media_type") == "tv" else min_votes
+        if c.get("vote_count", 0) < mv:
             continue
         if not (c.get("Özet") or "").strip():      # özetsiz kayıt seçim için işe yaramaz
             continue
@@ -340,7 +402,8 @@ def score_candidates(cands: List[dict], spec: QuerySpec) -> List[dict]:
 
     # ── Faz 1: Statik temel skor (her zaman) ──
     for c in cands:
-        wr = bayes(c.get("TMDB Puanı"), c.get("vote_count", 0), m=m)
+        wr = bayes(c.get("TMDB Puanı"), c.get("vote_count", 0),
+                   m=(max(10, m // 5) if c.get("media_type") == "tv" else m))
         genre_fit = (len(inc & _card_genres(c)) / len(inc)) if inc else 0.0
         c["_base"] = c["_rrf"] + 0.015 * (wr / 10) + 0.01 * genre_fit
         c["_score"] = c["_base"]
@@ -450,7 +513,8 @@ def mmr_rerank(
 def _brief(cands: List[dict]) -> str:
     def line(c):
         score_str = f"Sistem Skoru: {c.get('_score', 0):.2f}"
-        return (f"[ID:{c['movie_id']}] {c.get('Film', '')} ({c.get('Yıl', '')}) "
+        kind = "DİZİ" if c.get("media_type") == "tv" else "FİLM"
+        return (f"[ID:{c['_key']}] [{kind}] {c.get('Film', '')} ({c.get('Yıl', '')}) "
                 f"[{score_str}] "
                 f"puan {c.get('TMDB Puanı', '?')} ({c.get('vote_count', 0)} oy) | {c.get('Türler', '')} | "
                 f"{(c.get('Özet') or '')[:260]}")
@@ -460,12 +524,16 @@ def _brief(cands: List[dict]) -> str:
 def _select_system(spec: QuerySpec, limit: int) -> str:
     mood_field = ('  "mood_response": "kullanıcının belirttiği ruh haline 1 cümlelik empati notu",\n'
                   if spec.mood else "")
-    return f"""Bir film öneri sisteminin SON SEÇİM aşamasısın. Kullanıcıya 'sen' diye hitap et.
-Adaylar arasından isteğe en uygun EN FAZLA {limit} filmi, EN UYGUNDAN başlayarak sırala.
+    mix_rule = ("- Kullanıcı film ya da dizi ayrımı yapmadı: uygunsa hem [FİLM] hem [DİZİ] içeren karışık bir liste ver.\n"
+                if spec.media_type == "both" else
+                "- Yalnızca [DİZİ] adaylarını seç.\n" if spec.media_type == "tv" else "")
+    return f"""Bir film ve dizi öneri sisteminin SON SEÇİM aşamasısın. Kullanıcıya 'sen' diye hitap et.
+Adaylar arasından isteğe en uygun EN FAZLA {limit} içeriği (film veya dizi), EN UYGUNDAN başlayarak sırala.
 
 Kurallar:
 - Adayların yanındaki [Sistem Skoru: X] değeri bizim algoritmik uygunluk puanımızdır. Adayları seçerken ve sıralarken öncelikle Sistem Skoru yüksek olanlara MUTLAKA öncelik ver.
-- Yalnızca verilen [ID:...] değerlerini kullan; film uydurma.
+- Yalnızca verilen [ID:...] değerlerini (örn. movie:27205 ya da tv:1399) AYNEN kullan; film/dizi uydurma.
+{mix_rule}
 - Kullanıcının sert kriterlerinden birini açıkça ihlal eden filmi SEÇME. Emin değilsen seçme.
   (örn. "uzaylılar görünmesin" denmişse uzaylıların göründüğü bir film; "banka soygunu" denmişse soygun olmayan film.)
 - Gerekçe (reason) SADECE adayın satırındaki bilgiye (tür, yıl, puan, özet) dayansın. Satırda olmayan
@@ -496,6 +564,10 @@ def parse_selection(raw: str, valid_ids: set, limit: int):
     picks, seen = [], set()
     for r in ranked:
         rid = str(r.get("id", "")).strip().replace("ID:", "") if isinstance(r, dict) else ""
+        if rid not in valid_ids and rid.isdigit():          # LLM "27205" yazdıysa: tek eşleşme varsa tamamla
+            hit = [k for k in (f"movie:{rid}", f"tv:{rid}") if k in valid_ids]
+            if len(hit) == 1:
+                rid = hit[0]
         if rid in valid_ids and rid not in seen:       # uydurma / tekrar eden id'leri at
             seen.add(rid)
             picks.append((rid, str(r.get("reason", "")).strip()))
@@ -515,6 +587,9 @@ async def recommendation_node(state: GraphState):
 
     spec = QuerySpec.model_validate(_clean_spec(state.get("intent_data") or {}))   # tekrar LLM çağrısı YOK
     tool_calls_log, tool_results_log = [], []
+    tool_errors = []
+    _ERR_PREFIXES = ("Araç hatası", "Semantik arama hatası", "Graf arama hatası",
+                     "Dizi semantik arama hatası", "Dizi graf arama hatası")
 
     async def run_tool(name, args, tag=None) -> List[dict]:
         try:
@@ -522,6 +597,9 @@ async def recommendation_node(state: GraphState):
             raw = result.content[0].text
         except Exception as e:
             raw = f"Araç hatası: {e}"
+        if raw.startswith(_ERR_PREFIXES):
+            tool_errors.append(raw)
+            logger.error("Araç hatası (%s): %s", name, raw)
         tool_calls_log.append({"tool_name": tag or name, "arguments": args})
         tool_results_log.append({"tool_name": tag or name, "raw_result": raw})
         try:
@@ -540,10 +618,13 @@ async def recommendation_node(state: GraphState):
     merged = merge_candidates(results)
     filtered = hard_filter(merged, spec)
     ranked_c = score_candidates(filtered, spec)
+    pool_n = CANDIDATES_TO_LLM * 2 if spec.media_type == "both" else CANDIDATES_TO_LLM
     if MMR_ENABLED:
-        top = mmr_rerank(ranked_c, limit=CANDIDATES_TO_LLM, lambda_param=MMR_LAMBDA, spec=spec)
+        top = mmr_rerank(ranked_c, limit=pool_n, lambda_param=MMR_LAMBDA, spec=spec)
     else:
-        top = ranked_c[:CANDIDATES_TO_LLM]
+        top = ranked_c[:pool_n]
+    if spec.media_type == "both":
+        top = balance_media(top, CANDIDATES_TO_LLM)
     reranker_active = any(c.get("_reranker") is not None for c in top)
     logger.info("pipeline: plan=%d araç, birleşik=%d, sert filtre sonrası=%d, LLM'e=%d, reranker=%s, mmr=%s",
                 len(plan), len(merged), len(filtered), len(top),
@@ -551,9 +632,12 @@ async def recommendation_node(state: GraphState):
                 "aktif" if MMR_ENABLED else "pasif")
 
     limit = MAX_MOVIES_PEOPLE if (spec.director or spec.actor) else MAX_MOVIES
-    text = "Aradığın kriterlere uygun film bulunamadı. Farklı bir tür veya oyuncu denemek ister misin?"
+    noun = {"movie": "film", "tv": "dizi"}.get(spec.media_type, "film ya da dizi")
+    text = f"Aradığın kriterlere uygun {noun} bulunamadı. Farklı bir tür veya oyuncu denemek ister misin?"
+    if not top and tool_errors:       # "bulunamadı" değil, gerçek neden: servis hatası
+        text = "Şu anda arama servisine tam olarak ulaşamıyorum. Lütfen biraz sonra tekrar dene."
     mood_response, final_ids, reasons = "", [], {}
-    lite_by_id = {c["movie_id"]: c for c in top}
+    lite_by_id = {c["_key"]: c for c in top}
 
     # -- 3. sıralı seçim (tek LLM çağrısı) --------------------------------------
     if top:
@@ -577,7 +661,7 @@ async def recommendation_node(state: GraphState):
             parsed = None
 
         if parsed is None:          # LLM çıktısı bozuk -> skor sırasıyla ilk 3 (dürüst etiketle)
-            final_ids = [c["movie_id"] for c in top[:3]]
+            final_ids = [c["_key"] for c in top[:3]]
             text = "Kriterlerine en yakın bulabildiklerim bunlar:"
             reasons = {i: "Arama skoruna göre en yakın eşleşme." for i in final_ids}
         else:
@@ -595,13 +679,23 @@ async def recommendation_node(state: GraphState):
     # -- 4. yalnızca seçilenleri zenginleştir (fragman, platform, kadro) --------
     movies = []
     if final_ids:
-        full = await run_tool("enrich_movies", {"movie_ids": [int(i) for i in final_ids]}, tag="enrich_movies")
-        full_by_id = {c["movie_id"]: c for c in full}
-        for i in final_ids:                                   # sırayı aday listesinden değil final_ids'ten al
-            card = full_by_id.get(i) or lite_by_id.get(i)
+        mv_ids = [int(k.split(":", 1)[1]) for k in final_ids if k.startswith("movie:")]
+        tv_ids = [int(k.split(":", 1)[1]) for k in final_ids if k.startswith("tv:")]
+        jobs = []
+        if mv_ids:
+            jobs.append(run_tool("enrich_movies", {"movie_ids": mv_ids}, tag="enrich_movies"))
+        if tv_ids:
+            jobs.append(run_tool("enrich_series", {"series_ids": tv_ids}, tag="enrich_series"))
+        full_by_key = {}
+        for lst in await asyncio.gather(*jobs):
+            for c in lst:
+                full_by_key[f"{c.get('media_type') or 'movie'}:{c['movie_id']}"] = c
+        for k in final_ids:                                   # sırayı aday listesinden değil final_ids'ten al
+            card = full_by_key.get(k) or lite_by_id.get(k)
             if card:
                 card = _strip_internal(card)
-                card["Neden Önerildi"] = reasons.get(i, "")
+                card.setdefault("media_type", "tv" if k.startswith("tv:") else "movie")
+                card["Neden Önerildi"] = reasons.get(k, "")
                 movies.append(card)
 
     return {
@@ -622,18 +716,27 @@ async def movie_info_node(state: GraphState):
     spec = QuerySpec.model_validate(_clean_spec(state.get("intent_data") or {}))
     title = spec.movie_title or spec.reference_movie or state["prompt"]
     args = {"title": title, "year": spec.year_from or 0}
-    try:
-        result = await asyncio.wait_for(ctx.session.call_tool("get_movie_card", args), timeout=TOOL_TIMEOUT)
-        raw = result.content[0].text
-        cards = [c for c in json.loads(raw) if isinstance(c, dict)]
-    except Exception:
-        raw, cards = "[]", []
-    text = f"{cards[0]['Film']} hakkında bilgiler:" if cards else f"'{title}' adında bir film bulamadım."
+    tools = {"movie": ["get_movie_card"], "tv": ["get_series_card"],
+             "both": ["get_movie_card", "get_series_card"]}[spec.media_type]
+    cards, calls, results = [], [], []
+    for tool in tools:                      # 'both': önce film, bulunamazsa dizi
+        try:
+            result = await asyncio.wait_for(ctx.session.call_tool(tool, args), timeout=TOOL_TIMEOUT)
+            raw = result.content[0].text
+            cards = [c for c in json.loads(raw) if isinstance(c, dict)]
+        except Exception:
+            raw, cards = "[]", []
+        calls.append({"tool_name": tool, "arguments": args})
+        results.append({"tool_name": tool, "raw_result": raw})
+        if cards:
+            break
+    noun = {"movie": "film", "tv": "dizi"}.get(spec.media_type, "film ya da dizi")
+    text = f"{cards[0]['Film']} hakkında bilgiler:" if cards else f"'{title}' adında bir {noun} bulamadım."
     return {
         "final_output": json.dumps({"type": "movie_list", "text": text, "mood_response": "",
                                     "movies": [_strip_internal(c) for c in cards]}, ensure_ascii=False),
-        "tool_calls": [{"tool_name": "get_movie_card", "arguments": args}],
-        "tool_results": [{"tool_name": "get_movie_card", "raw_result": raw}],
+        "tool_calls": calls,
+        "tool_results": results,
     }
 
 
@@ -668,7 +771,7 @@ workflow.add_conditional_edges("intent_analyzer", route_by_intent)
 workflow.add_edge("recommendation_engine", END)
 workflow.add_edge("movie_info", END)
 workflow.add_edge("general_chatter", END)
-app = workflow.compile()
+app = workflow.compile(debug=True)
 
 
 async def get_tools(session):
@@ -885,3 +988,27 @@ async def build_push_recommendation(user_id: int, persona: str, favs: List[dict]
               else "Zevkine yakın kullanıcılar bu filmi sevdi")
     return {"movie_id": str(chosen["movie_id"]), "title": chosen.get("Film"),
             "message": message, "reason": reason}
+async def _cli_main():
+    """Terminal testi: api.py lifespan'ının yaptığı gibi MCP havuzunu kurar, sonra sohbet döngüsünü çalıştırır."""
+    import sys
+    from mcp import StdioServerParameters
+    from shared import MCPSessionPool
+
+    pool = MCPSessionPool(pool_size=1)
+    await pool.start(StdioServerParameters(command=sys.executable, args=["server.py"]), get_tools)
+    ctx.session = pool
+    ctx.tools = pool.tools
+    try:
+        while True:
+            input_text = await asyncio.to_thread(input, "Kullanıcı isteği: ")
+            if input_text.lower() in ("exit", "quit"):
+                break
+            state = {"prompt": input_text, "intent_data": {}, "messages": []}
+            result = await app.ainvoke(state)
+            print("Sonuç:", result.get("final_output", "Yanıt alınamadı."))
+    finally:
+        await pool.aclose()
+
+
+if __name__ == "__main__":
+    asyncio.run(_cli_main())

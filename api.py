@@ -23,7 +23,7 @@ import httpx
 from shared import ctx, chat_statuses, MCPSessionPool
 from client import (
     get_ollama_tools, generate_user_profile, generate_user_suggestions,
-    build_push_recommendation, app as graph_app,
+    build_push_recommendation, decay_profile, app as graph_app,
 )
 from auth import (
     CurrentUser, create_access_token, get_current_user,
@@ -110,6 +110,8 @@ CREATE TABLE IF NOT EXISTS recommendation_feedback (
     UNIQUE (user_id, movie_id, source)
 );
 CREATE INDEX IF NOT EXISTS idx_rec_feedback_user ON recommendation_feedback (user_id, feedback);
+-- öneri kaynağı (similar / collaborative / persona_genre): hangi hattın işe yaradığını ölçmek için
+ALTER TABLE recommendations ADD COLUMN IF NOT EXISTS source TEXT;
 """
 
 async def _ensure_schema() -> None:
@@ -350,6 +352,15 @@ async def get_user_persona(user_id: int):
         row = await conn.fetchrow("SELECT persona_summary FROM user_profiles WHERE user_id = $1", user_id)
     return row[0] if row else None
 
+async def get_blocked_and_seen(user_id: int):
+    """blocked: dislike edilenler (sert engel). seen: favoriler + gösterilmiş her şey (skorda hafif ceza)."""
+    async with ctx.db_pool.acquire() as conn:
+        fb = await conn.fetch("SELECT movie_id, feedback FROM recommendation_feedback WHERE user_id = $1", user_id)
+        favs = await conn.fetch("SELECT movie_id FROM favorites WHERE user_id = $1", user_id)
+    blocked = [str(r["movie_id"]) for r in fb if r["feedback"] == -1]
+    seen = [str(r["movie_id"]) for r in fb] + [str(r["movie_id"]) for r in favs]
+    return blocked, seen
+
 @app.post("/chat")
 async def chat(
     request: ChatRequest,
@@ -361,6 +372,11 @@ async def chat(
 
     user_persona = await get_user_persona(current_user.user_id)
     chat_history = await get_recent_chats(current_user.user_id, limit=10)
+    try:
+        blocked_ids, seen_ids = await get_blocked_and_seen(current_user.user_id)
+    except Exception:
+        logger.warning("blocked/seen listesi alınamadı; filtre atlanıyor", exc_info=True)
+        blocked_ids, seen_ids = [], []
 
     initial_state = {
         "prompt": request.prompt,
@@ -372,7 +388,9 @@ async def chat(
         "tool_calls": [],
         "tool_results": [],
         "session_id": request.session_id,
-        "user_id": current_user.user_id
+        "user_id": current_user.user_id,
+        "blocked_ids": blocked_ids,
+        "seen_ids": seen_ids,
     }
 
     try:
@@ -648,38 +666,49 @@ async def mark_recommendations_read(current_user: CurrentUser = Depends(get_curr
 
 async def profile_update_task(user_id: int):
     try:
-        # 1. Eski profili getir (Yoksa boş JSON)
-        current_profile = await get_user_persona(user_id)
-        if not current_profile:
-            current_profile = "{}"
+        # 1. Eski profil + son güncellemeden bu yana geçen gün
+        async with ctx.db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT persona_summary,
+                          COALESCE(EXTRACT(EPOCH FROM (now() - last_updated)) / 86400.0, 0) AS days
+                   FROM user_profiles WHERE user_id = $1""", user_id)
+        raw_profile = (row["persona_summary"] if row and row["persona_summary"] else "{}")
+        days = min(float(row["days"]) if row else 0.0, 365.0)
 
-        # 2. Sohbet geçmişini getir
+        # 2. Zamana bağlı yaşlandırma KODDA (LLM'e bırakılmaz)
+        aged_profile = json.dumps(decay_profile(raw_profile, days), ensure_ascii=False)
+
+        # 3. Sohbet geçmişi
         history_list = await get_recent_chats(user_id, limit=10)
         history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_list])
-        
-        # 3. Favorileri getir
-        favorites_dict = await get_user_favorites(user_id)
-        fav_items = [f"{f['Film']} ({f['Türler'] or ''})" for f in favorites_dict.get("favorites", [])]
-        favorites_text = ", ".join(fav_items) if fav_items else "Henüz favori eklenmemiş."
 
-        # 4. Geri Bildirimleri (Like/Dislike) getir
+        # 4. YALNIZCA son güncellemeden sonraki favori ve geri bildirimler (aksi halde eski favoriler
+        #    her seferinde yeniden güçlenir ve decay etkisiz kalır)
         async with ctx.db_pool.acquire() as conn:
+            new_favs = await conn.fetch(
+                """SELECT title, genres FROM favorites
+                   WHERE user_id = $1
+                     AND created_at > COALESCE((SELECT last_updated FROM user_profiles WHERE user_id = $1), 'epoch')
+                   ORDER BY created_at DESC LIMIT 30""", user_id)
             feedbacks = await conn.fetch(
-                "SELECT title, feedback FROM recommendation_feedback WHERE user_id = $1 AND feedback IS NOT NULL ORDER BY feedback_at DESC LIMIT 15", 
-                user_id
-            )
-        feedback_text = "\n".join([f"{f['title']}: {'Beğendi (Like)' if f['feedback'] == 1 else 'Beğenmedi (Dislike)'}" for f in feedbacks])
-        
-        # Sohbet ve geri bildirimleri tek bir metinde birleştir
+                """SELECT title, feedback FROM recommendation_feedback
+                   WHERE user_id = $1 AND feedback IS NOT NULL
+                     AND feedback_at > COALESCE((SELECT last_updated FROM user_profiles WHERE user_id = $1), 'epoch')
+                   ORDER BY feedback_at DESC LIMIT 30""", user_id)
+        favorites_text = (", ".join(f"{f['title']} ({f['genres'] or ''})" for f in new_favs)
+                          if new_favs else "Yeni favori yok.")
+        feedback_text = ("\n".join(f"{f['title']}: {'Beğendi (Like)' if f['feedback'] == 1 else 'Beğenmedi (Dislike)'}"
+                                   for f in feedbacks) if feedbacks else "Yeni geri bildirim yok.")
+
         combined_interactions = f"SOHBETLER:\n{history_text}\n\nGERİ BİLDİRİMLER (LIKE/DISLIKE):\n{feedback_text}"
 
-        # 5. Yeni profili üret (Decay ve ağırlıklandırma LLM tarafından yapılır)
-        new_profile_json = await generate_user_profile(combined_interactions, favorites_text, current_profile)
-        
+        # 5. Yeni profili üret (LLM yalnızca yeni sinyalleri ekler; çıktı şemaya zorlanır)
+        new_profile_json = await generate_user_profile(combined_interactions, favorites_text, aged_profile)
+
         # 6. Veritabanına kaydet
         async with ctx.db_pool.acquire() as conn:
             await conn.execute(
-                "UPDATE user_profiles SET persona_summary = $1, last_updated = CURRENT_TIMESTAMP WHERE user_id = $2", 
+                "UPDATE user_profiles SET persona_summary = $1, last_updated = CURRENT_TIMESTAMP WHERE user_id = $2",
                 new_profile_json, user_id
             )
     except Exception as e:
@@ -702,6 +731,20 @@ async def get_movie_card_by_title(title: str):
         logger.warning(f"Film kartı alınamadı: {title!r}", exc_info=True)
         return None
 
+async def get_movie_card_by_id(movie_id):
+    """Başlık araması yerine TMDB id'siyle tam kart (aynı adlı filmlerin karışmasını önler)."""
+    try:
+        mid = int(movie_id)
+    except (TypeError, ValueError):
+        return None
+    try:
+        result = await ctx.session.call_tool("enrich_movies", {"movie_ids": [mid]})
+        cards = _parse_cards(result)
+        return cards[0] if cards else None
+    except Exception:
+        logger.warning(f"Film kartı (id) alınamadı: {movie_id!r}", exc_info=True)
+        return None
+
 async def generate_and_save_recommendation_task(user_id: int):
     try:
         persona = await get_user_persona(user_id)
@@ -712,26 +755,31 @@ async def generate_and_save_recommendation_task(user_id: int):
         favs = (await get_user_favorites(user_id)).get("favorites", [])
         async with ctx.db_pool.acquire() as conn:
             rows = await conn.fetch("SELECT movie_id, title FROM recommendations WHERE user_id = $1", user_id)
-            disliked = await conn.fetch(
-                "SELECT movie_id, title FROM recommendation_feedback WHERE user_id = $1 AND feedback = -1", user_id)
+            # sohbette/push'ta gösterilmiş HER film (beğenilen, beğenilmeyen, nötr) tekrar önerilmesin
+            shown = await conn.fetch(
+                "SELECT movie_id, title FROM recommendation_feedback WHERE user_id = $1", user_id)
+            liked_rows = await conn.fetch(
+                """SELECT movie_id, title FROM recommendation_feedback
+                   WHERE user_id = $1 AND feedback = 1 ORDER BY feedback_at DESC LIMIT 10""", user_id)
 
-        # Favoriler + tüm geçmiş öneriler: id VE başlık ile dışla
+        # Favoriler + geçmiş öneriler + gösterilenler (dislike dahil): id VE başlık ile dışla
         exclude_ids = ({str(r["movie_id"]) for r in rows if r["movie_id"]} | {str(f["movie_id"]) for f in favs}
-                       | {str(d["movie_id"]) for d in disliked})
+                       | {str(s["movie_id"]) for s in shown if s["movie_id"]})
         exclude_titles = ({r["title"].lower().strip() for r in rows if r["title"]}
                           | {f["Film"].lower().strip() for f in favs if f["Film"]}
-                          | {d["title"].lower().strip() for d in disliked if d["title"]})
+                          | {s["title"].lower().strip() for s in shown if s["title"]})
+        liked = [{"movie_id": str(r["movie_id"]), "Film": r["title"]} for r in liked_rows if r["title"]]
 
-        rec = await build_push_recommendation(user_id, persona, favs, exclude_ids, exclude_titles)
+        rec = await build_push_recommendation(user_id, persona, favs, exclude_ids, exclude_titles, liked=liked)
         if not rec:
             return
 
         async with ctx.db_pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO recommendations (user_id, movie_id, title, message, reason)
-                   SELECT $1::bigint, $2::text, $3::text, $4::text, $5::text
+                """INSERT INTO recommendations (user_id, movie_id, title, message, reason, source)
+                   SELECT $1::bigint, $2::text, $3::text, $4::text, $5::text, $6::text
                    WHERE NOT EXISTS (SELECT 1 FROM recommendations WHERE user_id = $1::bigint AND movie_id = $2::text)""",
-                user_id, rec["movie_id"], rec["title"], rec["message"], rec["reason"],
+                user_id, rec["movie_id"], rec["title"], rec["message"], rec["reason"], rec.get("source"),
             )
         logger.info(f"Öneri kaydedildi (user={user_id}): {rec['title']!r} ({rec['reason']})")
     except Exception:
@@ -766,7 +814,7 @@ async def send_random_notifications():
             )
             for row in records:
                 try:
-                    card = await get_movie_card_by_title(row["title"])
+                    card = await get_movie_card_by_id(row["movie_id"]) or await get_movie_card_by_title(row["title"])
                     msg = PushMessage(
                         to=row["expo_push_token"],
                         title="Senin İçin Bir Film Buldum 🍿",

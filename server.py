@@ -179,6 +179,25 @@ def get_movie_id(title: str, year: int = 0):
     return max(pool, key=lambda r: r.get("vote_count", 0))["id"]
 
 
+@ttl_cache(ttl=3600)
+def resolve_movie_id(title: str = "", year: int = 0, movie_id: int = 0):
+    """
+    movie_id verilmişse önce onu doğrular: o id'li FİLMİN adı (tr/en/orijinal) verilen başlıkla uyuşuyorsa
+    id'yi kullanır. Uyuşmazsa ya da 404 ise (örn. favorilerde media_type olmadığı için dizi id'si geldiyse)
+    eski davranışa, yani başlıkla aramaya düşer.
+    """
+    if movie_id:
+        for lang in ("tr-TR", "en-US"):
+            try:
+                d = tmdb_get(f"/movie/{int(movie_id)}", language=lang)
+            except Exception:
+                break          # 404 / ağ hatası: başlığa düş
+            names = {norm(d.get("title", "")), norm(d.get("original_title", ""))}
+            if not title or norm(title) in names:
+                return d["id"]
+    return get_movie_id(title, year) if title else None
+
+
 # ---------------------------------------------------------------- kartlar
 def _clip(text: str, n: int = 400) -> str:
     """Kelime sınırında kes (eski [:200] cümle ortasında kesiyordu)."""
@@ -405,12 +424,14 @@ def search_movies_by_filters(
 
 @mcp.tool()
 @ttl_cache(ttl=1800)
-def get_similar_movies(movie_title: str, year: int = 0, limit: int = DEFAULT_LIMIT) -> str:
+def get_similar_movies(movie_title: str = "", year: int = 0, limit: int = DEFAULT_LIMIT,
+                       movie_id: int = 0) -> str:
     """
     Verilen filme benzer filmler (hafif aday kartları). İki kaynağı birleştirir:
     TMDB 'recommendations' (izleyici davranışı) + filmin KENDİ embedding'ine en yakın komşular (konu/atmosfer).
+    movie_id biliniyorsa ver (başlık araması aynı adlı filmleri karıştırabilir); movie_title yine de gönder.
     """
-    mid = get_movie_id(movie_title, year)
+    mid = resolve_movie_id(movie_title, year, movie_id)
     if not mid:
         return "[]"
     out, seen = [], {mid}

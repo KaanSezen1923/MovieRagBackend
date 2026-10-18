@@ -26,6 +26,7 @@ import json
 import os
 import random
 import re
+from itertools import zip_longest
 from typing import List, Optional
 from urllib.parse import urlparse
 
@@ -243,6 +244,109 @@ def bayes(avg, votes, m=500, c=6.5) -> float:
     return (votes * avg + m * c) / (votes + m)
 
 
+# ---- kişiselleştirme yardımcıları -------------------------------------------
+PERSONA_WEIGHT = float(os.getenv("PERSONA_WEIGHT", "0.02"))   # skora persona katkısı (RRF/Bayes ölçeğinde)
+SEEN_PENALTY = float(os.getenv("SEEN_PENALTY", "0.02"))       # daha önce gösterilene hafif ceza
+PROFILE_HALF_LIFE_DAYS = float(os.getenv("PROFILE_HALF_LIFE_DAYS", "60"))
+
+
+def _persona_obj(raw) -> dict:
+    """Persona JSON metni (ya da dict) -> dict. Bozuksa boş dict."""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        p = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return p if isinstance(p, dict) else {}
+
+
+def _weights(d, canon_genres: bool = False) -> dict:
+    """{ad: ağırlık} -> küçük harfli anahtarlı, yalnızca sayısal değerli sözlük."""
+    out = {}
+    if isinstance(d, dict):
+        for k, v in d.items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                key = str(k).strip().lower()
+                if canon_genres:
+                    key = _GENRE_CANON.get(key, key).lower()
+                out[key] = float(v)
+    return out
+
+
+def _avoid_genres(p: dict) -> set:
+    """Persona 'avoid' listesindeki TMDB türleri (küçük harf). Tür olmayan temalar LLM'e kalır."""
+    av = p.get("avoid")
+    out = set()
+    for a in (av if isinstance(av, list) else []):
+        g = _GENRE_CANON.get(str(a).strip().lower())
+        if g:
+            out.add(g.lower())
+    return out
+
+
+def _top_genres(p: dict, n: int = 2) -> List[str]:
+    avoid = _avoid_genres(p)
+    items = []
+    for k, w in _weights(p.get("genres"), canon_genres=True).items():
+        g = _GENRE_CANON.get(k)
+        if g and g.lower() not in avoid:
+            items.append((w, g))
+    return [g for _, g in sorted(items, reverse=True)[:n]]
+
+
+def _persona_fit(c: dict, p: dict) -> float:
+    """Adayın profile uyumu [0,1]: tür ağırlığı (%60) + yönetmen/oyuncu eşleşmesi (%40)."""
+    if not isinstance(p, dict) or not p:
+        return 0.0
+    gw = _weights(p.get("genres"), canon_genres=True)
+    genre = max((gw.get(g, 0.0) for g in _card_genres(c)), default=0.0)
+    people = {**_weights(p.get("actors")), **_weights(p.get("directors"))}
+    crew = {x.strip().lower() for x in f"{c.get('Director') or ''},{c.get('Cast') or ''}".split(",") if x.strip()}
+    person = max((people.get(n, 0.0) for n in crew), default=0.0)
+    return min(1.0, 0.6 * genre + 0.4 * person)
+
+
+def decay_profile(profile, days: float, half_life: float = PROFILE_HALF_LIFE_DAYS, floor: float = 0.15) -> dict:
+    """Zamana bağlı yaşlandırma (KODDA). Yarı ömür: half_life gün; floor altı girdiler silinir."""
+    p = _persona_obj(profile)
+    if days and days > 0:
+        f = 0.5 ** (days / half_life)
+        for k in ("genres", "directors", "actors"):
+            d = p.get(k) if isinstance(p.get(k), dict) else {}
+            p[k] = {n: round(float(w) * f, 3) for n, w in d.items()
+                    if isinstance(w, (int, float)) and not isinstance(w, bool) and float(w) * f >= floor}
+    return p
+
+
+def sanitize_profile(profile) -> dict:
+    """LLM'in ürettiği profili şemaya zorla: ağırlıklar [0,1], türler TMDB adlarına normalize."""
+    p = _persona_obj(profile)
+
+    def clamp(d, genres: bool = False) -> dict:
+        res = {}
+        if isinstance(d, dict):
+            for k, v in d.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    name = str(k).strip()
+                    if genres:
+                        name = _GENRE_CANON.get(name.lower())
+                    if not name:
+                        continue
+                    res[name] = max(res.get(name, 0.0), round(min(1.0, max(0.0, float(v))), 3))
+        return res
+
+    av = p.get("avoid")
+    vs = p.get("vibe_summary")
+    return {
+        "genres": clamp(p.get("genres"), genres=True),
+        "directors": clamp(p.get("directors")),
+        "actors": clamp(p.get("actors")),
+        "avoid": [str(a).strip() for a in av if str(a).strip()][:20] if isinstance(av, list) else [],
+        "vibe_summary": vs.strip()[:400] if isinstance(vs, str) else "",
+    }
+
+
 def _build_movie_plan(spec: QuerySpec, prompt: str, user_id: Optional[int] = None) -> List[tuple]:
     """FİLM araçları. Hangi araçlar hangi argümanlarla çalışacak? Deterministik; LLM karar vermez."""
     min_votes = MIN_VOTES_OBSCURE if spec.obscure else MIN_VOTES
@@ -359,12 +463,17 @@ def merge_candidates(result_lists: List[List[dict]]) -> List[dict]:
     return list(by_id.values())
 
 
-def hard_filter(cands: List[dict], spec: QuerySpec) -> List[dict]:
-    """Kullanıcının sert kısıtlarını KODLA uygula. (LLM'in uymasına güvenme.)"""
-    excl = {g.lower() for g in spec.exclude_genres}
+def hard_filter(cands: List[dict], spec: QuerySpec, blocked=frozenset(), avoid=frozenset()) -> List[dict]:
+    """Kullanıcının sert kısıtlarını KODLA uygula. (LLM'in uymasına güvenme.)
+    blocked: dislike edilen film id'leri. avoid: profildeki kaçınılan türler (küçük harf);
+    kullanıcı bu sorguda o türü AÇIKÇA istediyse (include_genres) engellenmez."""
+    avoid = set(avoid) - {g.lower() for g in spec.include_genres}
+    excl = {g.lower() for g in spec.exclude_genres} | avoid
     min_votes = MIN_VOTES_OBSCURE if spec.obscure else MIN_VOTES
     out = []
     for c in cands:
+        if str(c.get("movie_id") or "") in blocked:
+            continue
         if excl & _card_genres(c):
             continue
         r = _card_rating(c)
@@ -389,7 +498,8 @@ def hard_filter(cands: List[dict], spec: QuerySpec) -> List[dict]:
     return out
 
 
-def score_candidates(cands: List[dict], spec: QuerySpec) -> List[dict]:
+def score_candidates(cands: List[dict], spec: QuerySpec, persona: Optional[dict] = None,
+                     seen=frozenset()) -> List[dict]:
     """
     Aday filmleri skorlar: RRF + Bayes + tür uyumu + Reranker (varsa).
 
@@ -405,7 +515,11 @@ def score_candidates(cands: List[dict], spec: QuerySpec) -> List[dict]:
         wr = bayes(c.get("TMDB Puanı"), c.get("vote_count", 0),
                    m=(max(10, m // 5) if c.get("media_type") == "tv" else m))
         genre_fit = (len(inc & _card_genres(c)) / len(inc)) if inc else 0.0
-        c["_base"] = c["_rrf"] + 0.015 * (wr / 10) + 0.01 * genre_fit
+        pfit = _persona_fit(c, persona or {})
+        c["_persona_fit"] = round(pfit, 3)
+        c["_base"] = (c["_rrf"] + 0.015 * (wr / 10) + 0.01 * genre_fit
+                      + PERSONA_WEIGHT * pfit
+                      - (SEEN_PENALTY if str(c.get("movie_id") or "") in seen else 0.0))
         c["_score"] = c["_base"]
 
     # ── Faz 2: Cross-Encoder reranker (opsiyonel) ──
@@ -513,9 +627,11 @@ def mmr_rerank(
 def _brief(cands: List[dict]) -> str:
     def line(c):
         score_str = f"Sistem Skoru: {c.get('_score', 0):.2f}"
+        pfit = c.get("_persona_fit", 0.0)
+        pfit_str = f" | Profil Uyumu: %{int(pfit*100)}" if pfit > 0 else ""
         kind = "DİZİ" if c.get("media_type") == "tv" else "FİLM"
         return (f"[ID:{c['_key']}] [{kind}] {c.get('Film', '')} ({c.get('Yıl', '')}) "
-                f"[{score_str}] "
+                f"[{score_str}{pfit_str}] "
                 f"puan {c.get('TMDB Puanı', '?')} ({c.get('vote_count', 0)} oy) | {c.get('Türler', '')} | "
                 f"{(c.get('Özet') or '')[:260]}")
     return "\n".join(line(c) for c in cands)
@@ -531,7 +647,8 @@ def _select_system(spec: QuerySpec, limit: int) -> str:
 Adaylar arasından isteğe en uygun EN FAZLA {limit} içeriği (film veya dizi), EN UYGUNDAN başlayarak sırala.
 
 Kurallar:
-- Adayların yanındaki [Sistem Skoru: X] değeri bizim algoritmik uygunluk puanımızdır. Adayları seçerken ve sıralarken öncelikle Sistem Skoru yüksek olanlara MUTLAKA öncelik ver.
+- Adayların yanındaki [Sistem Skoru: X] değeri algoritmik uygunluk puanımızdır. Sıralarken Sistem Skoru ve Profil Uyumu yüksek olanlara MUTLAKA öncelik ver.
+- Kullanıcı Profili (JSON): Kullanıcının zevklerine (sevdiği türler, yönetmenler, oyuncular) uygun içeriklere öncelik ver. Gerekçede (reason), adayın kullanıcının profiline/zevkine nasıl hitap ettiğini de samimi şekilde belirt. Profildeki 'avoid' (kaçınılan) ögeleri içeren adayları seçme.
 - Yalnızca verilen [ID:...] değerlerini (örn. movie:27205 ya da tv:1399) AYNEN kullan; film/dizi uydurma.
 {mix_rule}
 - Kullanıcının sert kriterlerinden birini açıkça ihlal eden filmi SEÇME. Emin değilsen seçme.
@@ -616,8 +733,9 @@ async def recommendation_node(state: GraphState):
 
     # -- 2. birleştir, sert filtre, skorla --------------------------------------
     merged = merge_candidates(results)
-    filtered = hard_filter(merged, spec)
-    ranked_c = score_candidates(filtered, spec)
+    persona_p = _persona_obj(state.get("persona"))
+    filtered = hard_filter(merged, spec, set(state.get("blocked_ids") or []), _avoid_genres(persona_p))
+    ranked_c = score_candidates(filtered, spec, persona_p, set(state.get("seen_ids") or []))
     pool_n = CANDIDATES_TO_LLM * 2 if spec.media_type == "both" else CANDIDATES_TO_LLM
     if MMR_ENABLED:
         top = mmr_rerank(ranked_c, limit=pool_n, lambda_param=MMR_LAMBDA, spec=spec)
@@ -693,9 +811,12 @@ async def recommendation_node(state: GraphState):
         for k in final_ids:                                   # sırayı aday listesinden değil final_ids'ten al
             card = full_by_key.get(k) or lite_by_id.get(k)
             if card:
+                pfit = lite_by_id.get(k, {}).get("_persona_fit")
                 card = _strip_internal(card)
                 card.setdefault("media_type", "tv" if k.startswith("tv:") else "movie")
                 card["Neden Önerildi"] = reasons.get(k, "")
+                if pfit is not None:
+                    card["profil_uyumu"] = pfit
                 movies.append(card)
 
     return {
@@ -771,7 +892,7 @@ workflow.add_conditional_edges("intent_analyzer", route_by_intent)
 workflow.add_edge("recommendation_engine", END)
 workflow.add_edge("movie_info", END)
 workflow.add_edge("general_chatter", END)
-app = workflow.compile(debug=True)
+app = workflow.compile(debug=os.getenv("GRAPH_DEBUG", "false").lower() == "true")
 
 
 async def get_tools(session):
@@ -797,10 +918,16 @@ async def generate_user_profile(chat_history_text, favorites_text, current_profi
     Sen bir JSON profil güncelleme motorusun. Görevin, kullanıcının mevcut profilini (eski ağırlıklar) alıp, yeni etkileşimler (sohbet geçmişi, like/dislike geri bildirimleri ve favoriler) ışığında güncellemektir.
     
     KURALLAR:
-    1. Decay (Zamanla Unutma): Mevcut profildeki ilgi alanlarının puanlarını (0.0 - 1.0 arası) yaklaşık %15-20 oranında düşür. (Örn: eskiden 0.8 olan ama yeni sohbette geçmeyen bir türü 0.65'e indir). Puanı 0.2'nin altına düşenleri listeden çıkar.
-    2. Yeni İlgi Alanları: Yeni sohbetlerde, favorilerde veya 'Beğendi' (Like) bildirimlerinde geçen tür, yönetmen, oyuncu ve temaların puanlarını artır veya listeye yeni ekle (başlangıç puanı 0.8 - 1.0 arası).
-    3. Negatif Sinyaller (Dislike): 'Beğenmedi' olarak işaretlenen veya sohbette istemediğini belirttiği ögeleri "avoid" (kaçınılanlar) listesine ekle veya mevcut puanını sıfırla.
-    4. SADECE geçerli bir JSON döndür. Asla markdown (```json) veya ekstra açıklama ekleme.
+    1. Zamana bağlı yaşlandırma (decay) KOD tarafında zaten uygulandı: mevcut profildeki ağırlıkları DÜŞÜRME,
+       yeni etkileşim yoksa olduğu gibi koru.
+    2. Yeni sinyal: YALNIZCA "YENİ FAVORİLER", kullanıcının kendi (user) mesajları ve "Beğendi" geri bildirimleri
+       ilgi sinyalidir. Listede olan tür/yönetmen/oyuncu için puanı +0.1 artır (en çok 1.0); listede yoksa
+       0.6-0.8 arası bir puanla ekle.
+    3. Asistan (assistant) satırlarındaki "Önerilen filmler" kullanıcının zevki DEĞİLDİR; yalnızca kullanıcının
+       onlara verdiği tepki (istek, beğeni, itiraz) sinyaldir.
+    4. Negatif sinyal: 'Beğenmedi' olan veya sohbette istemediğini belirttiği ögeleri "avoid" listesine ekle
+       (tür ise TMDB tür adıyla: Action, Horror, Science Fiction...) ve varsa puanını sıfırla.
+    5. SADECE geçerli bir JSON döndür. Asla markdown (```json) veya ekstra açıklama ekleme.
 
     BEKLENEN JSON FORMATI:
     {
@@ -833,8 +960,8 @@ async def generate_user_profile(chat_history_text, favorites_text, current_profi
         clean_content = re.sub(r'```json\s?|```', '', content).strip()
         
         # Geçerli bir JSON olup olmadığını test et
-        json.loads(clean_content)
-        return clean_content
+        profile = sanitize_profile(json.loads(clean_content))
+        return json.dumps(profile, ensure_ascii=False)
     except Exception as e:
         logger.error("JSON Profil oluşturma hatası", exc_info=True)
         # LLM hata yaparsa profili sıfırlamak yerine eski profili koru
@@ -896,33 +1023,75 @@ async def _call_tool_cards(name: str, args: dict) -> List[dict]:
         return []
 
 
-async def gather_push_candidates(user_id: int, favs: List[dict], exclude_ids: set,
-                                 exclude_titles: set, n_seeds: int = 3, top_n: int = 12) -> List[dict]:
-    # Favorilerden rastgele tohumlar: her seferinde farklı bir "benzer filmler" havuzu
-    seeds = random.sample(favs, min(n_seeds, len(favs))) if favs else []
-    jobs = [_call_tool_cards("get_similar_movies", {"movie_title": s["Film"]}) for s in seeds]
-    jobs.append(_call_tool_cards("get_collaborative_recommendations",
-                                 {"user_id": user_id, "limit": 15, "min_votes": MIN_VOTES, "max_rating": 10.0}))
-    results = await asyncio.gather(*jobs)
+def _pick_seeds(pool: List[dict], n: int) -> List[dict]:
+    """Yeni -> eski sıralı havuzdan, yeniye daha yüksek ağırlıkla n tohum seç (tekrarsız)."""
+    pool = list(pool)
+    seeds = []
+    while pool and len(seeds) < n:
+        weights = [1.0 / (1 + i) for i in range(len(pool))]
+        seeds.append(pool.pop(random.choices(range(len(pool)), weights=weights)[0]))
+    return seeds
+
+
+async def gather_push_candidates(user_id: int, favs: List[dict], exclude_ids: set, exclude_titles: set,
+                                 persona: Optional[dict] = None, liked: Optional[List[dict]] = None,
+                                 n_seeds: int = 3, top_n: int = 12) -> List[dict]:
+    persona = persona or {}
+    avoid = _avoid_genres(persona)
+
+    # Tohum havuzu: beğenilenler + favoriler (her ikisi de yeni -> eski), dönüşümlü ve tekrarsız.
+    pool, seen_seed = [], set()
+    for s in (x for pair in zip_longest(liked or [], favs or []) for x in pair if x):
+        sid = str(s.get("movie_id") or "")
+        if s.get("Film") and sid not in seen_seed:
+            seen_seed.add(sid)
+            pool.append(s)
+    seeds = _pick_seeds(pool[:12], n_seeds)
+
+    seed_jobs = []
+    for s in seeds:
+        args = {"movie_title": s["Film"]}
+        if str(s.get("movie_id") or "").isdigit():
+            args["movie_id"] = int(s["movie_id"])      # başlıkla arama aynı adlı filmleri karıştırır
+        seed_jobs.append(_call_tool_cards("get_similar_movies", args))
+
+    cf_args = {"user_id": user_id, "limit": 15, "min_votes": MIN_VOTES, "max_rating": 10.0}
+    if avoid:
+        cf_args["exclude_genres"] = ", ".join(sorted(avoid))
+    extra_jobs = [_call_tool_cards("get_collaborative_recommendations", cf_args)]
+
+    # Soğuk başlangıç: tohum yoksa profilin en güçlü türlerinden aday çek.
+    top_genres = _top_genres(persona, 2)
+    if not seeds and top_genres:
+        f_args = {"genre_name": ",".join(top_genres), "min_votes": MIN_VOTES, "limit": 20}
+        if avoid:
+            f_args["exclude_genres"] = ", ".join(sorted(avoid))
+        extra_jobs.append(_call_tool_cards("search_movies_by_filters", f_args))
+
+    results = await asyncio.gather(*seed_jobs, *extra_jobs)
+    seed_results, extra_results = results[:len(seeds)], results[len(seeds):]
 
     lists = []
-    for seed, cards in zip(seeds, results[:len(seeds)]):
+    for seed, cards in zip(seeds, seed_results):
         for c in cards:
-            c["_because"] = seed["Film"]          # gerekçe için hangi favoriden geldi
+            c["_because"] = seed["Film"]          # gerekçe için hangi favori/beğeniden geldi
         lists.append(cards)
-    lists.append(results[-1])                      # collaborative: _because yok
+    lists.extend(extra_results)                    # collaborative / persona türü: _because yok
 
     candidates = []
     for c in merge_candidates(lists):
         mid = str(c.get("movie_id") or "")
         title = (c.get("Film") or "").lower().strip()
-        if not mid or mid in exclude_ids or title in exclude_titles:   # favori + önceki öneriler
+        if not mid or mid in exclude_ids or title in exclude_titles:   # favori + gösterilenler + dislike
+            continue
+        if avoid & _card_genres(c):                                      # profilde kaçınılan türler
             continue
         if c.get("vote_count", 0) < MIN_VOTES:
             continue
         if not (c.get("Özet") or "").strip():
             continue
-        c["_pscore"] = c["_rrf"] + 0.015 * (bayes(c.get("TMDB Puanı"), c.get("vote_count", 0)) / 10)
+        c["_pscore"] = (c["_rrf"] + 0.015 * (bayes(c.get("TMDB Puanı"), c.get("vote_count", 0)) / 10)
+                        + PERSONA_WEIGHT * _persona_fit(c, persona))
         candidates.append(c)
 
     candidates.sort(key=lambda c: c["_pscore"], reverse=True)
@@ -952,9 +1121,11 @@ def _fallback_message(c: dict) -> str:
 
 
 async def build_push_recommendation(user_id: int, persona: str, favs: List[dict],
-                                    exclude_ids: set, exclude_titles: set) -> Optional[dict]:
-    """-> {"movie_id", "title", "message", "reason"} veya None (uygun aday yoksa)."""
-    cands = await gather_push_candidates(user_id, favs, exclude_ids, exclude_titles)
+                                    exclude_ids: set, exclude_titles: set,
+                                    liked: Optional[List[dict]] = None) -> Optional[dict]:
+    """-> {"movie_id", "title", "message", "reason", "source"} veya None (uygun aday yoksa)."""
+    cands = await gather_push_candidates(user_id, favs, exclude_ids, exclude_titles,
+                                         persona=_persona_obj(persona), liked=liked)
     if not cands:
         logger.info(f"Push adayı yok (user={user_id})")
         return None
@@ -986,26 +1157,210 @@ async def build_push_recommendation(user_id: int, persona: str, favs: List[dict]
 
     reason = (f"{chosen['_because']} filmini sevdiğin için" if chosen.get("_because")
               else "Zevkine yakın kullanıcılar bu filmi sevdi")
+    srcs = " ".join(chosen.get("_sources") or [])
+    source = ("similar" if chosen.get("_because")
+              else "persona_genre" if "tmdb_filter" in srcs else "collaborative")
     return {"movie_id": str(chosen["movie_id"]), "title": chosen.get("Film"),
-            "message": message, "reason": reason}
+            "message": message, "reason": reason, "source": source}
 async def _cli_main():
-    """Terminal testi: api.py lifespan'ının yaptığı gibi MCP havuzunu kurar, sonra sohbet döngüsünü çalıştırır."""
+    """Terminal testi: MCP havuzunu kurar, kullanıcı profili destekli ve şeffaf sohbet döngüsünü çalıştırır."""
     import sys
+    import time
     from mcp import StdioServerParameters
     from shared import MCPSessionPool
 
+    sample_profiles = {
+        "1": {
+            "name": "Bilim Kurgu & Nolan Tutkunu (Korku Karşıtı)",
+            "data": {
+                "genres": {"Science Fiction": 0.95, "Drama": 0.8, "Mystery": 0.75},
+                "directors": {"Christopher Nolan": 0.95, "Denis Villeneuve": 0.85},
+                "actors": {"Cillian Murphy": 0.85, "Leonardo DiCaprio": 0.8},
+                "avoid": ["Horror"],
+                "vibe_summary": "Zihin büken felsefi bilim kurgu, derin dram ve gizem seviyor. Korku ögelerinden nefret ediyor."
+            }
+        },
+        "2": {
+            "name": "Romantik Komedi & Animasyon Sever (Aksiyon/Savaş Karşıtı)",
+            "data": {
+                "genres": {"Romance": 0.95, "Comedy": 0.85, "Animation": 0.8},
+                "directors": {"Richard Linklater": 0.85, "Woody Allen": 0.75},
+                "actors": {"Ryan Gosling": 0.85, "Emma Stone": 0.9},
+                "avoid": ["Action", "War"],
+                "vibe_summary": "İç ısıtan duygusal hikayeleri, zeki komedileri seviyor. Şiddet ve savaştan uzak duruyor."
+            }
+        },
+        "3": {
+            "name": "Karanlık Suç, Neo-Noir & David Fincher Hayranı (Komediden Kaçınır)",
+            "data": {
+                "genres": {"Crime": 0.95, "Thriller": 0.9, "Mystery": 0.85},
+                "directors": {"David Fincher": 0.95, "Martin Scorsese": 0.85},
+                "actors": {"Brad Pitt": 0.85, "Jake Gyllenhaal": 0.8},
+                "avoid": ["Comedy"],
+                "vibe_summary": "Karanlık psikolojik gerilim, neo-noir ve karmaşık suç hikayelerini seviyor."
+            }
+        }
+    }
+
+    current_profile = sample_profiles["1"]["data"]
+    current_profile_name = sample_profiles["1"]["name"]
+    blocked_ids = set()
+    seen_ids = set()
+
+    def show_profile():
+        print("\n" + "=" * 70)
+        print("👤 AKTİF KULLANICI PROFİLİ:")
+        if not current_profile or not any(current_profile.values()):
+            print("   (Boş Profil - Profilsiz Genel Öneri Modu)")
+        else:
+            print(f"   Adı: {current_profile_name}")
+            print(f"   Vibe: {current_profile.get('vibe_summary', '-')}")
+            print(f"   Sevdiği Türler: {current_profile.get('genres', {})}")
+            print(f"   Sevdiği Yönetmenler: {current_profile.get('directors', {})}")
+            print(f"   Sevdiği Oyuncular: {current_profile.get('actors', {})}")
+            print(f"   Kaçınılanlar (Avoid): {current_profile.get('avoid', [])}")
+        if blocked_ids:
+            print(f"   Engellenen Film ID'leri: {list(blocked_ids)}")
+        if seen_ids:
+            print(f"   İzlenmiş / Görülen ID'ler: {list(seen_ids)}")
+        print("=" * 70)
+
+    print("\n" + "=" * 70)
+    print("🎬 MOVIE & TV RAG SİSTEMİ - PROFİL ETKİSİ KONSOL TESTİ")
+    print("=" * 70)
+    print("Kullanılabilir Komutlar:")
+    print("  /profile        -> Mevcut profili ve kısıtlamaları gösterir")
+    print("  /1, /2, /3      -> Hazır test profillerine geçiş yapar")
+    print("  /clear          -> Profili temizler (profilsiz modu karşılaştırmak için)")
+    print("  /avoid <tür>    -> Kaçınılan tür ekler/çıkarır (örn: /avoid Horror)")
+    print("  /block <id>     -> Dislike edilen ID ekler (örn: /block 155)")
+    print("  /seen <id>      -> Daha önce görülmüş ID ekler")
+    print("  exit / quit     -> Testten çıkar")
+    print("=" * 70)
+
+    show_profile()
+
     pool = MCPSessionPool(pool_size=1)
+    print("\n⏳ MCP sunucusu başlatılıyor...")
     await pool.start(StdioServerParameters(command=sys.executable, args=["server.py"]), get_tools)
     ctx.session = pool
     ctx.tools = pool.tools
+    print("✅ MCP sunucusu hazır! Sorgularınızı yazabilirsiniz.\n")
+
     try:
         while True:
-            input_text = await asyncio.to_thread(input, "Kullanıcı isteği: ")
-            if input_text.lower() in ("exit", "quit"):
+            raw_input = await asyncio.to_thread(input, "\n💬 Kullanıcı İsteği: ")
+            text = raw_input.strip()
+            if not text:
+                continue
+            if text.lower() in ("exit", "quit"):
                 break
-            state = {"prompt": input_text, "intent_data": {}, "messages": []}
-            result = await app.ainvoke(state)
-            print("Sonuç:", result.get("final_output", "Yanıt alınamadı."))
+
+            # Komut kontrolleri
+            if text == "/profile":
+                show_profile()
+                continue
+            if text in ("/1", "/2", "/3"):
+                num = text[1]
+                current_profile = sample_profiles[num]["data"]
+                current_profile_name = sample_profiles[num]["name"]
+                print(f"✅ Profil değiştirildi: {current_profile_name}")
+                show_profile()
+                continue
+            if text in ("/clear", "/empty", "/0"):
+                current_profile = {}
+                current_profile_name = "Boş Profil"
+                print("✅ Profil temizlendi! Şu an profilsiz genel mod aktif.")
+                continue
+            if text.startswith("/avoid "):
+                genre = text.split(" ", 1)[1].strip()
+                av = current_profile.setdefault("avoid", [])
+                if genre in av:
+                    av.remove(genre)
+                    print(f"✅ '{genre}' avoid listesinden çıkarıldı.")
+                else:
+                    av.append(genre)
+                    print(f"🚫 '{genre}' avoid listesine eklendi.")
+                continue
+            if text.startswith("/block "):
+                bid = text.split(" ", 1)[1].strip()
+                blocked_ids.add(bid)
+                print(f"🚫 ID={bid} engellenenler listesine eklendi.")
+                continue
+            if text.startswith("/seen "):
+                sid = text.split(" ", 1)[1].strip()
+                seen_ids.add(sid)
+                print(f"👁️ ID={sid} görülenler listesine eklendi.")
+                continue
+
+            # State hazırla
+            persona_json = json.dumps(current_profile, ensure_ascii=False) if current_profile else "{}"
+            state: GraphState = {
+                "prompt": text,
+                "session_id": "console_session",
+                "messages": [],
+                "persona": persona_json,
+                "intent": "",
+                "intent_data": {},
+                "blocked_ids": list(blocked_ids),
+                "seen_ids": list(seen_ids),
+            }
+
+            start_t = time.time()
+            print(f"\n🚀 SORGULANIYOR: '{text}'")
+            if current_profile:
+                print(f"👤 Aktif Profil: {current_profile_name}")
+                if current_profile.get("avoid"):
+                    print(f"🚫 Avoid Filtresi: {current_profile.get('avoid')}")
+
+            try:
+                # Düğümleri astream ile adım adım izle
+                async for event in app.astream(state):
+                    for node_name, state_update in event.items():
+                        if node_name == "intent_analyzer":
+                            intent = state_update.get("intent")
+                            data = state_update.get("intent_data", {})
+                            print(f"\n🧠 [NİYET ANALİZİ]: {intent}")
+                            if data:
+                                print(f"   Parametreler: {json.dumps(data, ensure_ascii=False)}")
+                        elif node_name == "recommendation_engine":
+                            calls = state_update.get("tool_calls", [])
+                            print(f"\n🎬 [ÖNERİ MOTORU]: {len(calls)} araç sorgulandı")
+                            for c in calls:
+                                print(f"   ➔ {c.get('tool_name')}: {json.dumps(c.get('arguments'), ensure_ascii=False)}")
+
+                        if "final_output" in state_update:
+                            raw_out = state_update["final_output"]
+                            try:
+                                parsed = json.loads(raw_out)
+                                print("\n" + "-" * 70)
+                                print(f"🤖 ASİSTAN CEVABI:\n{parsed.get('text', '')}")
+                                if parsed.get("mood_response"):
+                                    print(f"\n🎭 Ruh Hali Tepkisi: {parsed.get('mood_response')}")
+
+                                movies = parsed.get("movies", [])
+                                if movies:
+                                    print(f"\n🍿 ÖNERİLEN İÇERİKLER ({len(movies)} adet):")
+                                    for idx, m in enumerate(movies, 1):
+                                        kind = "DİZİ" if m.get("media_type") == "tv" else "FİLM"
+                                        pfit = m.get("profil_uyumu")
+                                        pfit_str = f" | ⭐ Profil Uyumu: %{int(pfit * 100)}" if pfit is not None and pfit > 0 else ""
+                                        print(f"\n   {idx}. [{kind}] {m.get('Film')} ({m.get('Yıl', '?')}) - TMDB: {m.get('TMDB Puanı')}{pfit_str}")
+                                        print(f"      Türler: {m.get('Türler', '-')}")
+                                        if m.get("Director"):
+                                            print(f"      Yönetmen/Yaratıcı: {m.get('Director')}")
+                                        if m.get("Cast"):
+                                            print(f"      Kadro: {m.get('Cast')}")
+                                        print(f"      💡 Neden Önerildi: {m.get('Neden Önerildi', '-')}")
+                            except Exception:
+                                print(f"\nÇıktı: {raw_out}")
+
+                elapsed = time.time() - start_t
+                print(f"\n⏱️ Toplam Süre: {elapsed:.2f} saniye")
+                print("=" * 70)
+            except Exception as e:
+                print(f"\n❌ Çalıştırma hatası: {e}")
+                logger.error("Konsol çalıştırma hatası", exc_info=True)
     finally:
         await pool.aclose()
 

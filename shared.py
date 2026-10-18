@@ -89,3 +89,6 @@ class GraphState(TypedDict):
     tool_results: Optional[List[dict]] # MCP server'dan dönen ham veriler
     session_id: Optional[str]          # İstek oturum ID'si
     intent_data: Optional[dict]
+    user_id: Optional[int]             # LangGraph şemada olmayan anahtarı sessizce düşürür -> şart
+    blocked_ids: Optional[List[str]]   # dislike edilen film id'leri (sert engel)
+    seen_ids: Optional[List[str]]      # favori + daha önce gösterilenler (skorda hafif ceza)

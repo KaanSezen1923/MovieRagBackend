@@ -16,11 +16,13 @@ from dotenv import load_dotenv
 from langchain_ollama import OllamaEmbeddings
 from neo4j import GraphDatabase
 
-from movie_common import EMBED_DIM, EMBED_MODEL, VECTOR_INDEX, movie_doc
+
+from movie_common import EMBED_DIM, EMBED_MODEL, VECTOR_INDEX, movie_doc, get_embedder
+embeddings_model = get_embedder()
 
 load_dotenv()
 BATCH_SIZE = 50
-embeddings_model = OllamaEmbeddings(model=EMBED_MODEL)
+
 
 
 def chunked(iterable, size):

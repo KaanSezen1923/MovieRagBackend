@@ -29,6 +29,16 @@ DOC_PREFIX = os.getenv("EMBED_DOC_PREFIX", "search_document: " if _nomic else ""
 QUERY_PREFIX = os.getenv("EMBED_QUERY_PREFIX", "search_query: " if _nomic else "")
 VECTOR_INDEX = "movie_overview_index"
 
+EMBED_PROVIDER = os.getenv("EMBED_PROVIDER", "ollama")
+
+def get_embedder():
+    if EMBED_PROVIDER == "openai":
+        from langchain_openai import OpenAIEmbeddings   # OPENAI_API_KEY env'den okunur
+        return OpenAIEmbeddings(model=EMBED_MODEL, dimensions=EMBED_DIM)
+    from langchain_ollama import OllamaEmbeddings
+    return OllamaEmbeddings(model=EMBED_MODEL,
+                            base_url=os.getenv("OLLAMA_EMBED_HOST", "http://localhost:11434"))
+
 
 def movie_doc(m: dict) -> str:
     """Embedding'e giren metin: sadece özet değil; başlık, tür, tagline, anahtar kelimeler de."""

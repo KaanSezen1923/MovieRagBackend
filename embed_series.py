@@ -14,13 +14,12 @@ from dotenv import load_dotenv
 from langchain_ollama import OllamaEmbeddings
 from neo4j import GraphDatabase
 
-from movie_common import EMBED_DIM, EMBED_MODEL
-
+from movie_common import EMBED_DIM, EMBED_MODEL, get_embedder
 load_dotenv()
 SERIES_VECTOR_INDEX = os.getenv("SERIES_VECTOR_INDEX", "series_overview_index")
 EMBED_HOST = os.getenv("OLLAMA_EMBED_HOST", "http://localhost:11434")
 BATCH_SIZE = 50
-embeddings_model = OllamaEmbeddings(model=EMBED_MODEL, base_url=EMBED_HOST)
+embeddings_model = get_embedder()
 
 from movie_common import movie_doc
 

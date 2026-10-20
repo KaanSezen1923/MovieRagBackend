@@ -51,11 +51,8 @@ EMBED_HOST = os.getenv("OLLAMA_EMBED_HOST")  # varsayılan koyma; yoksa açıkç
 
 embeddings_model = None
 try:
-    from langchain_ollama import OllamaEmbeddings
-    from movie_common import EMBED_MODEL
-    if not EMBED_HOST:
-        raise RuntimeError("OLLAMA_EMBED_HOST tanımlı değil")
-    _m = OllamaEmbeddings(model=EMBED_MODEL, base_url=EMBED_HOST)
+    from movie_common import get_embedder
+    _m = get_embedder()
     _m.embed_query("ping")          # gerçek bağlantı testi
     embeddings_model = _m
 except Exception as e:

@@ -406,6 +406,32 @@ async def get_user_persona(user_id: int):
     return row[0] if row else None
 
 
+def _parse_persona_json(raw_persona: str | None) -> dict:
+    """persona_summary JSON metnini güvenli şekilde ayrıştırıp standart şema döner."""
+    default_persona = {
+        "genres": {},
+        "directors": {},
+        "actors": {},
+        "avoid": [],
+        "vibe_summary": "",
+    }
+    if not raw_persona:
+        return default_persona
+    try:
+        parsed = json.loads(raw_persona) if isinstance(raw_persona, str) else raw_persona
+        if not isinstance(parsed, dict):
+            return default_persona
+        return {
+            "genres": parsed.get("genres") if isinstance(parsed.get("genres"), dict) else {},
+            "directors": parsed.get("directors") if isinstance(parsed.get("directors"), dict) else {},
+            "actors": parsed.get("actors") if isinstance(parsed.get("actors"), dict) else {},
+            "avoid": parsed.get("avoid") if isinstance(parsed.get("avoid"), list) else [],
+            "vibe_summary": parsed.get("vibe_summary") if isinstance(parsed.get("vibe_summary"), str) else "",
+        }
+    except Exception:
+        return default_persona
+
+
 async def get_blocked_and_seen(user_id: int):
     """blocked: dislike edilenler (sert engel). seen: favoriler + gösterilmiş her şey (skorda hafif ceza)."""
     async with ctx.db_pool.acquire() as conn:
@@ -474,7 +500,7 @@ async def chat(
     return {"answer": answer, "tool_calls": tool_calls, "tool_results": tool_results}
 
 
-# --- ÖNERİ GERİ BİLDİRİMİ (LIKE / DISLIKE) ---
+# --- ÖNERİ GERİ BİLDİRİMİ (LIKE / DISLIKE) VE ZEVK PROFİLİ ---
 
 class FeedbackRequest(BaseModel):
     movie_id: str
@@ -545,6 +571,10 @@ async def get_feedback_ids(current_user: CurrentUser = Depends(get_current_user)
 
 @app.get("/feedback/stats")
 async def get_feedback_stats(current_user: CurrentUser = Depends(get_current_user)):
+    """
+    Kullanıcının geri bildirim istatistiklerini (chat, push ve genel özet)
+    ve arka planda oluşan AI zevk profilini (persona_summary) döner.
+    """
     async with ctx.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT source,
@@ -554,15 +584,80 @@ async def get_feedback_stats(current_user: CurrentUser = Depends(get_current_use
                FROM recommendation_feedback WHERE user_id = $1 GROUP BY source""",
             current_user.user_id,
         )
+        profile_row = await conn.fetchrow(
+            "SELECT persona_summary, last_updated FROM user_profiles WHERE user_id = $1",
+            current_user.user_id,
+        )
+
     out = {}
+    total_shown = 0
+    total_likes = 0
+    total_dislikes = 0
+
     for r in rows:
-        rated = r["likes"] + r["dislikes"]
+        shown = int(r["shown"] or 0)
+        likes = int(r["likes"] or 0)
+        dislikes = int(r["dislikes"] or 0)
+        rated = likes + dislikes
+        total_shown += shown
+        total_likes += likes
+        total_dislikes += dislikes
         out[r["source"]] = {
-            "shown": r["shown"], "likes": r["likes"], "dislikes": r["dislikes"],
-            "like_rate": round(r["likes"] / rated, 3) if rated else None,   # oy verenler içinde
-            "like_per_shown": round(r["likes"] / r["shown"], 3) if r["shown"] else None,
+            "shown": shown,
+            "likes": likes,
+            "dislikes": dislikes,
+            "like_rate": round(likes / rated, 3) if rated else None,
+            "like_per_shown": round(likes / shown, 3) if shown else None,
         }
+
+    total_rated = total_likes + total_dislikes
+    out["summary"] = {
+        "shown": total_shown,
+        "likes": total_likes,
+        "dislikes": total_dislikes,
+        "rated": total_rated,
+        "like_rate": round(total_likes / total_rated, 3) if total_rated else None,
+        "like_per_shown": round(total_likes / total_shown, 3) if total_shown else None,
+    }
+    out["persona"] = _parse_persona_json(profile_row["persona_summary"] if profile_row else None)
+    out["persona_updated_at"] = (
+        profile_row["last_updated"].isoformat()
+        if profile_row and profile_row["last_updated"]
+        else None
+    )
     return out
+
+
+@app.get("/profile/persona")
+async def get_profile_persona(current_user: CurrentUser = Depends(get_current_user)):
+    """Kullanıcının AI zevk profilini (persona_summary) ve son güncellenme zamanını döner."""
+    async with ctx.db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT persona_summary, last_updated FROM user_profiles WHERE user_id = $1",
+            current_user.user_id,
+        )
+    persona = _parse_persona_json(row["persona_summary"] if row else None)
+    updated_at = row["last_updated"].isoformat() if row and row["last_updated"] else None
+    return {
+        "persona": persona,
+        "last_updated": updated_at,
+    }
+
+
+@app.post("/profile/refresh")
+async def refresh_profile_persona(current_user: CurrentUser = Depends(get_current_user)):
+    """Kullanıcının isteği üzerine AI zevk profilini anında yeniden hesaplar ve döner."""
+    await profile_update_task(current_user.user_id)
+    async with ctx.db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT persona_summary, last_updated FROM user_profiles WHERE user_id = $1",
+            current_user.user_id,
+        )
+    return {
+        "status": "success",
+        "persona": _parse_persona_json(row["persona_summary"] if row else None),
+        "last_updated": row["last_updated"].isoformat() if row and row["last_updated"] else None,
+    }
 
 
 @app.get("/sessions")

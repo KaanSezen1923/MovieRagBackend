@@ -1,5 +1,5 @@
 """
-MCP sunucusu: film arama araçları.
+MCP sunucusu: film ve dizi arama araçları.
 
 MİMARİ DEĞİŞİKLİK — "önce aday, sonra zenginleştir":
   Eski sürümde her arama aracı, döndürdüğü HER filmi TMDB'ye 1 ağır istekle (videos+credits+providers)
@@ -8,19 +8,21 @@ MİMARİ DEĞİŞİKLİK — "önce aday, sonra zenginleştir":
       TMDB liste yanıtından, ek istek olmadan.
     * enrich_movies(ids) yalnızca SON seçilen filmler için fragman/platform/kadro getirir.
 
-DÜZELTİLEN HATALAR:
-  * Graf araması film adını yeniden TMDB'de aratıyordu (Oldboy remake, 'Piyanist', 'Deniz Feneri'
-    çakışmaları). Artık Neo4j'deki TMDB id'si doğrudan kullanılıyor.
-  * Arama alanları norm() ile normalize (Inception/ınception hatası).
-  * Sıralama: vote_average DESC tek başına 3 oylu 10.0'ları üste çıkarıyordu -> Bayesian skor + min oy.
-  * Discover popularity.desc sıralaması yeni çıkanlara kayıyordu -> vote_average.desc + min oy (varsayılan).
-  * exclude_genres, max_rating, yıl aralığı destekleniyor (Q12, Q18, Q36 bu yüzden çözülemiyordu).
-  * Anlamsal arama: filtreli, k=150 geniş havuz, doğru embedding öneki, film 'kendi vektörü'yle benzer arama.
-  * Tüm HTTP isteklerinde timeout; _pick_trailer üzerindeki anlamsız cache kaldırıldı.
-  * Sessiz kısıt gevşetme artık kartlarda 'relaxed' alanıyla görünür.
+RENDER & BULUT DAYANIKLILIĞI DÜZELTMELERİ:
+  * Render'da yerel Ollama (localhost:11434) çalışmadığında veya vektör index'ine erişilemediğinde
+    search_movies_semantically ve search_series_semantically "Semantik arama modeli aktif değil."
+    dönüp patlamak yerine otomatik olarak Hibrit Yedek Arama (Neo4j Anahtar Kelime + Özet/Başlık
+    Eşleşmesi + TMDB Keyword Discover & Search + Yerel JSON Veri Seti) çalıştırır.
+  * get_keyword_id tam eşleşmelere (örn. "vampire" -> 3133) ve tekil/çoğul dönüşümüne öncelik verir;
+    çoklu anahtar kelimeleri "|" (OR) ile birleştirir.
+  * search_series_by_filters ve search_movies_by_filters açık bir keyword ("vampire" vb.) verildiğinde
+    önce tür kısıtlarını gevşetir; keyword kısıtını en son gevşetir ve TMDB sonuçlarını Bayesian
+    ağırlıklı puanla sıralar (40 oylu alakasız yapımların üste çıkmasını önler).
+  * Neo4j Aura bağlantı kopmalarına karşı keep_alive ve max_connection_lifetime eklendi.
 """
 import json
 import os
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -33,30 +35,37 @@ from neo4j import GraphDatabase
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from movie_common import QUERY_PREFIX, VECTOR_INDEX, bayes_score, norm
-
 load_dotenv()
+
+from movie_common import QUERY_PREFIX, VECTOR_INDEX, bayes_score, norm, get_embedder
+
 AUTH_KEY = os.getenv("AUTH_KEY")
 BASE_URL = "https://api.themoviedb.org/3"
 DEFAULT_LIMIT = 20
 BAYES_M, BAYES_C = 500, 6.5
 
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USERNAME", "neo4j")
+NEO4J_USER = os.getenv("NEO4J_USERNAME") or os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
-neo4j_driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+neo4j_driver = GraphDatabase.driver(
+    NEO4J_URI,
+    auth=(NEO4J_USER, NEO4J_PASSWORD),
+    max_connection_lifetime=300,
+    keep_alive=True,
+    connection_timeout=10,
+)
 
-EMBED_HOST = os.getenv("OLLAMA_EMBED_HOST")  # varsayılan koyma; yoksa açıkça hata ver
+EMBED_HOST = os.getenv("OLLAMA_EMBED_HOST")
+_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 embeddings_model = None
 try:
-    from movie_common import get_embedder
     _m = get_embedder()
     _m.embed_query("ping")          # gerçek bağlantı testi
     embeddings_model = _m
 except Exception as e:
-    print(f"Embedding modeli yüklenemedi: {e}", file=sys.stderr)
+    print(f"Embedding modeli yüklenemedi (hibrit yedek arama kullanılacak): {e}", file=sys.stderr)
 
 mcp = FastMCP("TMDB Movie Explorer")
 
@@ -126,6 +135,151 @@ def ttl_cache(ttl=3600, maxsize=500):
     return decorator
 
 
+# ---------------------------------------------------------------- Türkçe/İngilizce Tema ve Anahtar Kelime Çözümleme
+_TR_EN_THEME_MAP = {
+    "vampir": "vampire",
+    "vampirler": "vampire",
+    "zombi": "zombie",
+    "zombiler": "zombie",
+    "zombili": "zombie",
+    "kurt adam": "werewolf",
+    "kurtadam": "werewolf",
+    "cadi": "witch",
+    "cadilar": "witch",
+    "buyucu": "wizard",
+    "buyu": "magic",
+    "sihir": "magic",
+    "hayalet": "ghost",
+    "cin": "demon",
+    "iblis": "demon",
+    "seytan": "exorcism",
+    "seri katil": "serial killer",
+    "dedektif": "detective",
+    "polisiye": "detective",
+    "cinayet": "murder",
+    "zaman yolculugu": "time travel",
+    "zamanda yolculuk": "time travel",
+    "yapay zeka": "artificial intelligence",
+    "uzay": "space",
+    "astronot": "astronaut",
+    "uzayli": "alien",
+    "uzaylilar": "alien",
+    "soygun": "heist",
+    "banka soygunu": "bank robbery",
+    "hapishane": "prison",
+    "siberpunk": "cyberpunk",
+    "distopya": "dystopia",
+    "distopik": "dystopia",
+    "kiyamet": "apocalypse",
+    "kiyamet sonrasi": "post-apocalyptic",
+    "salgin": "pandemic",
+    "intikam": "revenge",
+    "hafiza kaybi": "amnesia",
+    "hayatta kalma": "survival",
+    "canavar": "monster",
+    "ejderha": "dragon",
+    "casus": "spy",
+    "ajan": "spy",
+    "mafya": "mafia",
+    "suikastci": "assassin",
+    "mahkeme": "courtroom",
+    "fener": "lighthouse",
+    "deniz feneri": "lighthouse",
+    "simulasyon": "simulation",
+    "ters kose": "plot twist",
+    "kara komedi": "dark comedy",
+    "klostrofobik": "claustrophobic",
+    "orta cag": "medieval",
+    "mitoloji": "mythology",
+    "super kahraman": "superhero",
+    "okul": "high school",
+    "lise": "high school",
+    "genclik": "teen",
+    "samuray": "samurai",
+    "kovboy": "western",
+    "korsan": "pirate",
+    "denizalti": "submarine",
+    "keskin nisanci": "sniper",
+}
+
+_SEMANTIC_STOPWORDS = {
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "without",
+    "by", "from", "into", "about", "as", "is", "are", "was", "were", "be", "been", "being",
+    "that", "which", "who", "whom", "whose", "where", "when", "why", "how", "this", "these", "those",
+    "tv", "series", "show", "shows", "television", "movie", "movies", "film", "films", "cinema",
+    "featuring", "features", "centered", "around", "focusing", "focused", "story", "stories",
+    "plot", "theme", "themed", "tone", "atmosphere", "style", "like", "similar", "good", "best",
+    "great", "popular", "top", "new", "old", "set", "world", "life", "people", "man", "woman",
+    "young", "group", "person", "character", "characters", "protagonist", "main", "recommend",
+    "recommendation", "recommendations", "suggest", "suggestion",
+    # Türkçe genel dolgu kelimeleri
+    "bir", "ve", "veya", "ama", "fakat", "ancak", "icin", "gibi", "kadar", "daha", "cok", "en",
+    "bana", "sana", "oner", "oneri", "onerisi", "onerileri", "tavsiye", "et", "eder", "misin",
+    "film", "filmi", "filmleri", "dizi", "dizisi", "dizileri", "yapim", "yapimlar", "izle",
+    "izlemek", "istiyorum", "ariyorum", "var", "mi", "olan", "gecen", "icinde", "konulu", "temali",
+    "tarzi", "tarzinda", "hakkinda", "ustune", "uzerine", "kurulu", "odakli", "barindiran",
+}
+
+
+def _singularize_en(word: str) -> str:
+    w = word.strip().lower()
+    if len(w) <= 3:
+        return w
+    if w.endswith("wolves"):
+        return w[:-6] + "wolf"
+    if w.endswith("ies") and len(w) > 4:
+        return w[:-3] + "y"
+    if w.endswith(("ches", "shes", "xes", "zes", "sses")):
+        return w[:-2]
+    if w.endswith("s") and not w.endswith(("ss", "us", "is")):
+        return w[:-1]
+    return w
+
+
+def _extract_semantic_terms(query: str) -> list[str]:
+    """
+    İngilizce veya Türkçe semantik sorgudan Neo4j/TMDB aramasında kullanılacak
+    öz (anahtar) terimleri çıkarır.
+    Örn: "TV series featuring vampires." -> ["vampire"]
+         "vampir dizileri öner." -> ["vampire"]
+    """
+    q_norm = norm(query or "")
+    if not q_norm:
+        return []
+
+    terms: list[str] = []
+    # 1. Çok kelimeli veya Türkçe bilinen kalıpları yakala
+    for tr_key, en_val in sorted(_TR_EN_THEME_MAP.items(), key=lambda x: -len(x[0])):
+        if re.search(rf"\b{re.escape(tr_key)}\b", q_norm):
+            if en_val not in terms:
+                terms.append(en_val)
+
+    # 2. İngilizce çok kelimeli bilinen ifadeleri koru
+    for phrase in ("time travel", "serial killer", "artificial intelligence", "post apocalyptic",
+                   "post-apocalyptic", "dark comedy", "bank robbery", "high school", "plot twist",
+                   "world war", "space opera", "true crime", "martial arts", "found footage"):
+        if phrase in q_norm and phrase not in terms:
+            terms.append(phrase.replace("post apocalyptic", "post-apocalyptic"))
+
+    # 3. Tekil kelimeleri ayıkla
+    tokens = re.findall(r"[a-z0-9]+", q_norm)
+    for tok in tokens:
+        if len(tok) < 3 or tok in _SEMANTIC_STOPWORDS:
+            continue
+        mapped = _TR_EN_THEME_MAP.get(tok)
+        if mapped:
+            if mapped not in terms:
+                terms.append(mapped)
+            continue
+        sing = _singularize_en(tok)
+        if sing in _SEMANTIC_STOPWORDS:
+            continue
+        if sing not in terms:
+            terms.append(sing)
+
+    return terms[:6]
+
+
 # ---------------------------------------------------------------- id çözümleme
 @ttl_cache(ttl=86400)
 def get_person_id(name: str):
@@ -135,8 +289,43 @@ def get_person_id(name: str):
 
 @ttl_cache(ttl=86400)
 def get_keyword_id(keyword: str):
-    res = tmdb_get("/search/keyword", query=keyword).get("results", [])
-    return res[0]["id"] if res else None
+    """
+    TMDB anahtar kelime ID'sini bulur.
+    - Birebir isim eşleşmelerine (örn. 'vampire' -> 3133) öncelik verir.
+    - Çoğul kelimelerde ('vampires') tekil haliyle de eşleştirir.
+    - Virgülle ayrılmış birden fazla keyword varsa '|' (OR) ile birleştirir.
+    """
+    if not keyword:
+        return None
+    parts = [p.strip() for p in str(keyword).split(",") if p.strip()]
+    resolved_ids = []
+    for raw_kw in parts:
+        q_norm = norm(raw_kw)
+        q_mapped = _TR_EN_THEME_MAP.get(q_norm, raw_kw.strip())
+        q_sing = _singularize_en(q_mapped)
+        candidates_to_try = [q_mapped]
+        if q_sing != q_mapped.lower():
+            candidates_to_try.append(q_sing)
+
+        found_id = None
+        for q in candidates_to_try:
+            try:
+                res = tmdb_get("/search/keyword", query=q).get("results", [])
+            except Exception:
+                res = []
+            if not res:
+                continue
+            targets = {norm(q), norm(q_sing), norm(q_mapped)}
+            exact = [r for r in res if norm(r.get("name", "")) in targets]
+            found_id = (exact[0] if exact else res[0])["id"]
+            if exact:
+                break
+        if found_id is not None and str(found_id) not in resolved_ids:
+            resolved_ids.append(str(found_id))
+
+    if not resolved_ids:
+        return None
+    return int(resolved_ids[0]) if len(resolved_ids) == 1 else "|".join(resolved_ids)
 
 
 @ttl_cache(ttl=3600)
@@ -149,30 +338,27 @@ def get_movie_id(title: str, year: int = 0):
     params = {"query": title, "language": "en-US"}
     if year:
         params["year"] = year
-        
+
     try:
         results = tmdb_get("/search/movie", **params).get("results", [])
     except Exception:
         return None
-        
+
     if not results:
         return None
-        
+
     t = norm(title)
-    # Birebir isim eşleşmelerini bul
     exact = [r for r in results if norm(r.get("title", "")) == t or norm(r.get("original_title", "")) == t]
     pool = exact or results
-    
-    # Eğer yıl parametresi geldiyse, havuzu o yıla göre daralt
+
     if year:
         year_matches = [
-            r for r in pool 
+            r for r in pool
             if r.get("release_date") and r.get("release_date").startswith(str(year))
         ]
         if year_matches:
             pool = year_matches
 
-    # Daraltılmış havuz içinde en popüler olanı döndür
     return max(pool, key=lambda r: r.get("vote_count", 0))["id"]
 
 
@@ -335,6 +521,219 @@ def _run_graph(cypher: str, source: str, **params) -> list:
     ]
 
 
+# ---------------------------------------------------------------- Yerel JSON Yedek Arama (Neo4j/TMDB boşsa)
+def _search_local_json(
+    is_series: bool,
+    terms: list[str],
+    excl_gids: list[int],
+    min_rating: float,
+    max_rating: float,
+    year_from: int,
+    year_to: int,
+    min_votes: int,
+    limit: int,
+    source: str,
+) -> list[dict]:
+    """Neo4j ve TMDB erişilemez veya boş dönerse yerel JSON veri setinden (movies_data / series_data) arar."""
+    filename = "series_data.json" if is_series else "movies_data.json"
+    path = os.path.join(_ROOT_DIR, filename)
+    if not os.path.exists(path) or not terms:
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            items = json.load(f)
+    except Exception:
+        return []
+
+    excl_set = set(excl_gids or [])
+    m_bayes = SERIES_BAYES_M if is_series else BAYES_M
+    scored = []
+    for it in items:
+        votes = int(it.get("vote_count") or 0)
+        if votes < min_votes:
+            continue
+        rating = float(it.get("vote_average") or 0.0)
+        if rating < min_rating or rating > max_rating:
+            continue
+        date_str = (it.get("first_air_date") if is_series else it.get("release_date")) or ""
+        yr = int(date_str[:4]) if date_str[:4].isdigit() else 0
+        if year_from and (not yr or yr < year_from):
+            continue
+        if year_to and (not yr or yr > year_to):
+            continue
+        gids = {g["id"] for g in (it.get("genres") or []) if isinstance(g, dict) and "id" in g}
+        if excl_set & gids:
+            continue
+
+        kws = [norm(k.get("name", "")) for k in (it.get("keywords") or []) if isinstance(k, dict)]
+        title_str = (it.get("name") if is_series else it.get("title")) or ""
+        ov_norm = norm(it.get("overview") or "")
+        tg_norm = norm(it.get("tagline") or "")
+        tn_norm = norm(title_str)
+
+        kw_hits = sum(1 for t in terms if any(t in kw for kw in kws))
+        txt_hits = sum(1 for t in terms if t in ov_norm or t in tg_norm or t in tn_norm)
+        if (kw_hits + txt_hits) == 0:
+            continue
+
+        wr = bayes_score(rating, votes, m=m_bayes, c=BAYES_C)
+        sc = kw_hits * 2.5 + txt_hits * 1.0 + 0.15 * wr
+        creators = it.get("creators" if is_series else "directors") or []
+        cast_list = it.get("cast") or []
+        card = lite_card(
+            mid=it["id"],
+            title=title_str,
+            year=str(yr or ""),
+            rating=rating,
+            votes=votes,
+            genres=[g.get("name", "") for g in (it.get("genres") or []) if isinstance(g, dict)],
+            overview=it.get("overview") or "",
+            poster=it.get("poster_path"),
+            director=", ".join(c.get("name", "") for c in creators if isinstance(c, dict)),
+            cast=", ".join(c.get("name", "") for c in cast_list[:4] if isinstance(c, dict)),
+            source=source,
+            score=sc,
+            media_type="tv" if is_series else "movie",
+        )
+        scored.append((sc, card))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [c for _, c in scored[:limit]]
+
+
+def _semantic_fallback_movies(
+    semantic_query: str,
+    excl_gids: list[int],
+    min_rating: float,
+    max_rating: float,
+    year_from: int,
+    year_to: int,
+    min_votes: int,
+    limit: int,
+) -> list[dict]:
+    """
+    Embedding modeli aktif olmadığında (örn. Render'da yerel Ollama yoksa)
+    veya vektör index'i hata verdiğinde devreye giren hibrit semantik arama:
+      1) Neo4j Keyword + Overview/Tagline/Title eşleşmesi
+      2) TMDB Keyword Discover + TMDB Search
+      3) Yerel JSON yedeği
+    """
+    terms = _extract_semantic_terms(semantic_query)
+    if not terms:
+        terms = [norm(semantic_query)[:40]] if norm(semantic_query) else []
+    out, seen = [], set()
+    excl_set = set(excl_gids or [])
+
+    # 1. Neo4j üzerinde anahtar kelime + özet/başlık araması
+    if terms:
+        cypher = f"""
+        MATCH (movie:Movie)
+        WHERE movie.vote_count >= $min_votes
+          AND movie.vote_average >= $min_rating AND movie.vote_average <= $max_rating
+          AND ($year_from = 0 OR movie.year >= $year_from)
+          AND ($year_to = 0 OR movie.year <= $year_to)
+          AND NOT EXISTS {{ MATCH (movie)-[:HAS_GENRE]->(x:Genre) WHERE x.id IN $excl }}
+        OPTIONAL MATCH (movie)-[:HAS_KEYWORD]->(k:Keyword)
+        WITH movie, collect(k.name_norm) AS kw_names,
+             toLower(coalesce(movie.overview, '')) AS ov,
+             toLower(coalesce(movie.tagline, '')) AS tg,
+             coalesce(movie.title_norm, '') AS tn
+        WITH movie,
+             size([t IN $terms WHERE any(kw IN kw_names WHERE kw CONTAINS t)]) AS kw_hits,
+             size([t IN $terms WHERE ov CONTAINS t OR tg CONTAINS t OR tn CONTAINS t]) AS txt_hits
+        WHERE (kw_hits + txt_hits) > 0
+        WITH movie, (kw_hits * 2.5 + txt_hits * 1.0) + 0.15 * {_WR} AS score
+        RETURN {_GRAPH_RETURN}, score
+        ORDER BY score DESC LIMIT $limit
+        """
+        try:
+            for c in _run_graph(
+                cypher, "semantic",
+                terms=terms, min_votes=min_votes, min_rating=min_rating, max_rating=max_rating,
+                year_from=year_from, year_to=year_to, excl=list(excl_set), limit=limit,
+            ):
+                if c["movie_id"] not in seen:
+                    seen.add(c["movie_id"])
+                    out.append(c)
+        except Exception:
+            pass
+
+    # 2. TMDB Keyword Discover + TMDB Metin Araması
+    if len(out) < limit and terms:
+        kids = []
+        for t in terms[:3]:
+            kid = get_keyword_id(t)
+            if kid is not None and str(kid) not in kids:
+                kids.append(str(kid))
+        if kids:
+            params = {
+                "include_adult": "false",
+                "language": "en-US",
+                "sort_by": "vote_count.desc",
+                "vote_count.gte": max(int(min_votes), 1),
+                "with_keywords": "|".join(kids),
+            }
+            if excl_set:
+                params["without_genres"] = "|".join(map(str, excl_set))
+            if min_rating > 0:
+                params["vote_average.gte"] = min_rating
+            if max_rating < 10:
+                params["vote_average.lte"] = max_rating
+            if year_from:
+                params["primary_release_date.gte"] = f"{year_from}-01-01"
+            if year_to:
+                params["primary_release_date.lte"] = f"{year_to}-12-31"
+            try:
+                res = tmdb_get("/discover/movie", page=1, **params).get("results", [])
+                res = [r for r in res if not (set(r.get("genre_ids", [])) & excl_set)]
+                res.sort(key=lambda r: bayes_score(r.get("vote_average"), r.get("vote_count"), m=BAYES_M), reverse=True)
+                for c in _cards_from_tmdb_results(res, "semantic"):
+                    if c["movie_id"] not in seen:
+                        seen.add(c["movie_id"])
+                        out.append(c)
+            except Exception:
+                pass
+
+    if len(out) < limit and terms:
+        try:
+            q_str = " ".join(terms[:2])
+            res = tmdb_get("/search/movie", query=q_str, language="en-US", include_adult="false").get("results", [])
+            valid_res = []
+            for r in res:
+                vc = int(r.get("vote_count") or 0)
+                va = float(r.get("vote_average") or 0.0)
+                rd = (r.get("release_date") or "")[:4]
+                yr = int(rd) if rd.isdigit() else 0
+                if vc < min_votes or va < min_rating or va > max_rating:
+                    continue
+                if year_from and (not yr or yr < year_from):
+                    continue
+                if year_to and (not yr or yr > year_to):
+                    continue
+                if set(r.get("genre_ids", [])) & excl_set:
+                    continue
+                valid_res.append(r)
+            valid_res.sort(key=lambda r: bayes_score(r.get("vote_average"), r.get("vote_count"), m=BAYES_M), reverse=True)
+            for c in _cards_from_tmdb_results(valid_res, "semantic"):
+                if c["movie_id"] not in seen:
+                    seen.add(c["movie_id"])
+                    out.append(c)
+        except Exception:
+            pass
+
+    # 3. Yerel JSON yedeği
+    if len(out) < limit and terms:
+        for c in _search_local_json(
+            False, terms, list(excl_set), min_rating, max_rating,
+            year_from, year_to, min_votes, limit, "semantic",
+        ):
+            if c["movie_id"] not in seen:
+                seen.add(c["movie_id"])
+                out.append(c)
+
+    return out[:limit]
+
+
 # ================================================================ MCP araçları
 @mcp.tool()
 @ttl_cache(ttl=1800)
@@ -389,6 +788,7 @@ def search_movies_by_filters(
 
     def fetch(p):
         out = []
+        seen_ids = set()
         for page in (1, 2):
             if len(out) >= limit:
                 break
@@ -396,25 +796,48 @@ def search_movies_by_filters(
                 res = tmdb_get("/discover/movie", page=page, **p).get("results", [])
             except Exception:
                 break
-            out.extend(res)
+            for r in res:
+                if r.get("id") and r["id"] not in seen_ids:
+                    seen_ids.add(r["id"])
+                    out.append(r)
             if len(res) < 20:
                 break
+        # Düşük oylu şişirilmiş puanların popüler klasikleri ezmemesi için popüler sayfayı da harmanla
+        if p.get("sort_by") == "vote_average.desc" and (kid or min_votes < 150):
+            try:
+                pop_p = {**p, "sort_by": "popularity.desc"}
+                for r in tmdb_get("/discover/movie", page=1, **pop_p).get("results", []):
+                    if r.get("id") and r["id"] not in seen_ids:
+                        seen_ids.add(r["id"])
+                        out.append(r)
+            except Exception:
+                pass
+            out.sort(
+                key=lambda r: bayes_score(r.get("vote_average"), r.get("vote_count"), m=BAYES_M),
+                reverse=True,
+            )
         return out
 
     relaxed = []
     movies = fetch(params)
-    # Kısıt gevşetme: artık SESSİZ değil, kartlarda 'relaxed' olarak işaretlenir.
-    if not movies and kid:
-        params.pop("with_keywords", None)
-        relaxed.append("keyword")
-        movies = fetch(params)
+    # Kısıt gevşetme: açıkça keyword verilmişse ÖNCE türleri gevşet, keyword'ü koru!
     if not movies and len(incl) > 1:
         params["with_genres"] = "|".join(map(str, incl))            # pipe = OR
         relaxed.append("genres_and_to_or")
         movies = fetch(params)
+    if not movies and kid and incl:
+        params.pop("with_genres", None)
+        relaxed.append("genres_dropped_for_keyword")
+        movies = fetch(params)
+    if not movies and kid:
+        if incl:
+            params["with_genres"] = "|".join(map(str, incl))
+        params.pop("with_keywords", None)
+        relaxed.append("keyword")
+        movies = fetch(params)
 
     excl_set = set(excl)
-    movies = [m for m in movies if not (set(m.get("genre_ids", [])) & excl_set)]   # garanti için ayrıca süz
+    movies = [m for m in movies if not (set(m.get("genre_ids", [])) & excl_set)]
     return json.dumps(_cards_from_tmdb_results(movies[:limit], "tmdb_filter", relaxed or None),
                       ensure_ascii=False)
 
@@ -431,7 +854,7 @@ def get_similar_movies(movie_title: str = "", year: int = 0, limit: int = DEFAUL
     mid = resolve_movie_id(movie_title, year, movie_id)
     if not mid:
         return "[]"
-    out, seen = [], {mid}
+    out, seen = [], {str(mid)}
 
     try:
         recs = tmdb_get(f"/movie/{mid}/recommendations", language="en-US").get("results", [])
@@ -439,7 +862,8 @@ def get_similar_movies(movie_title: str = "", year: int = 0, limit: int = DEFAUL
             recs = tmdb_get(f"/movie/{mid}/similar", language="en-US").get("results", [])
         for c in _cards_from_tmdb_results(recs, "tmdb_rec"):
             if c["movie_id"] not in seen:
-                seen.add(c["movie_id"]); out.append(c)
+                seen.add(c["movie_id"])
+                out.append(c)
     except Exception:
         pass
 
@@ -453,7 +877,8 @@ def get_similar_movies(movie_title: str = "", year: int = 0, limit: int = DEFAUL
         """
         for c in _run_graph(cypher, "vector_neighbor", id=mid, k=60, limit=limit):
             if c["movie_id"] not in seen:
-                seen.add(c["movie_id"]); out.append(c)
+                seen.add(c["movie_id"])
+                out.append(c)
     except Exception:
         pass
 
@@ -469,7 +894,10 @@ def search_movies_in_graph(category: str, search_value: str, limit: int = DEFAUL
     search_value: 'Christopher Nolan', 'Brad Pitt', 'Science Fiction,Western' (Genre'da virgül = hepsi), 'time travel'.
     Sonuçlar Bayesian kalite skoruyla sıralanır.
     """
-    val = norm(search_value or "")
+    raw_val = (search_value or "").strip()
+    val = norm(raw_val)
+    if category == "Keyword":
+        val = norm(_TR_EN_THEME_MAP.get(val, _singularize_en(val)))
     heads = {
         "Director": "MATCH (p:Person)-[:DIRECTED]->(movie:Movie) WHERE p.name_norm CONTAINS $val "
                     "AND movie.vote_count >= $min_votes WITH DISTINCT movie",
@@ -492,11 +920,16 @@ def search_movies_in_graph(category: str, search_value: str, limit: int = DEFAUL
     if category == "Genre" and not gids:
         return "[]"
     cypher = f"{head} RETURN {_GRAPH_RETURN}, {_WR} AS wr ORDER BY wr DESC LIMIT $limit"
+    cards = []
     try:
         cards = _run_graph(cypher, f"graph_{category.lower()}", val=val, gids=gids,
                            min_votes=min_votes, limit=limit)
-    except Exception as e:
-        return f"Graf arama hatası: {e}"
+    except Exception:
+        cards = []
+
+    # Neo4j'de Keyword bulunamadıysa özet/başlık veya yerel JSON yedeğine düş
+    if not cards and category == "Keyword" and val:
+        cards = _semantic_fallback_movies(val, [], 0.0, 10.0, 0, 0, min_votes, limit)
     return json.dumps(cards, ensure_ascii=False)
 
 
@@ -517,26 +950,77 @@ def search_movies_semantically(
     kısıtlarını sorguya KOYMA; bunlar için ilgili parametreleri kullan.
     Örn: "a lonely astronaut drifting in deep space, slow contemplative tone".
     """
-    if not embeddings_model:
-        return "Semantik arama modeli aktif değil."
+    excl_gids = genre_ids(exclude_genres)
+    cards = []
+    if embeddings_model is not None:
+        try:
+            vec = embeddings_model.embed_query(QUERY_PREFIX + semantic_query)
+            cypher = f"""
+            CALL db.index.vector.queryNodes('{VECTOR_INDEX}', $k, $vec) YIELD node AS movie, score
+            WHERE movie.vote_count >= $min_votes
+              AND movie.vote_average >= $min_rating AND movie.vote_average <= $max_rating
+              AND ($year_from = 0 OR movie.year >= $year_from)
+              AND ($year_to = 0 OR movie.year <= $year_to)
+              AND NOT EXISTS {{ MATCH (movie)-[:HAS_GENRE]->(x:Genre) WHERE x.id IN $excl }}
+            RETURN {_GRAPH_RETURN}, score
+            ORDER BY score DESC LIMIT $limit
+            """
+            cards = _run_graph(cypher, "semantic", vec=vec, k=150, min_votes=min_votes,
+                               min_rating=min_rating, max_rating=max_rating, year_from=year_from,
+                               year_to=year_to, excl=excl_gids, limit=limit)
+        except Exception:
+            cards = []
+
+    if not cards:
+        cards = _semantic_fallback_movies(
+            semantic_query=semantic_query,
+            excl_gids=excl_gids,
+            min_rating=min_rating,
+            max_rating=max_rating,
+            year_from=year_from,
+            year_to=year_to,
+            min_votes=min_votes,
+            limit=limit,
+        )
+    return json.dumps(cards, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_collaborative_recommendations(
+    user_id: int,
+    exclude_genres: str = None,
+    min_rating: float = 0.0,
+    max_rating: float = 10.0,
+    year_from: int = 0,
+    year_to: int = 0,
+    min_votes: int = 100,
+    limit: int = DEFAULT_LIMIT,
+) -> str:
+    """
+    Kullanıcı-film etkileşim grafına dayalı işbirlikçi filtreleme (GraphRAG Collaborative Filtering).
+    Neo4j'de :User düğümü yoksa hata fırlatmadan boş liste döner.
+    """
+    excl_gids = genre_ids(exclude_genres)
+    cypher = f"""
+    MATCH (u:User {{id: $user_id}})-[:LIKED|FAVORITED]->(fav:Movie)<-[:LIKED|FAVORITED]-(peer:User)-[:LIKED|FAVORITED]->(movie:Movie)
+    WHERE movie <> fav AND NOT (u)-[:LIKED|FAVORITED|DISLIKED]->(movie)
+      AND movie.vote_count >= $min_votes
+      AND movie.vote_average >= $min_rating AND movie.vote_average <= $max_rating
+      AND ($year_from = 0 OR movie.year >= $year_from)
+      AND ($year_to = 0 OR movie.year <= $year_to)
+      AND NOT EXISTS {{ MATCH (movie)-[:HAS_GENRE]->(x:Genre) WHERE x.id IN $excl }}
+    WITH movie, count(DISTINCT peer) AS overlap
+    RETURN {_GRAPH_RETURN}, (overlap * 1.0 + 0.1 * {_WR}) AS score
+    ORDER BY score DESC LIMIT $limit
+    """
     try:
-        vec = embeddings_model.embed_query(QUERY_PREFIX + semantic_query)
-        cypher = f"""
-        CALL db.index.vector.queryNodes('{VECTOR_INDEX}', $k, $vec) YIELD node AS movie, score
-        WHERE movie.vote_count >= $min_votes
-          AND movie.vote_average >= $min_rating AND movie.vote_average <= $max_rating
-          AND ($year_from = 0 OR movie.year >= $year_from)
-          AND ($year_to = 0 OR movie.year <= $year_to)
-          AND NOT EXISTS {{ MATCH (movie)-[:HAS_GENRE]->(x:Genre) WHERE x.id IN $excl }}
-        RETURN {_GRAPH_RETURN}, score
-        ORDER BY score DESC LIMIT $limit
-        """
-        # Vektör index'i filtreden ÖNCE k kayıt döner; filtre sonrası yeterli kalsın diye k büyük.
-        cards = _run_graph(cypher, "semantic", vec=vec, k=150, min_votes=min_votes,
-                           min_rating=min_rating, max_rating=max_rating, year_from=year_from,
-                           year_to=year_to, excl=genre_ids(exclude_genres), limit=limit)
-    except Exception as e:
-        return f"Semantik arama hatası: {e}"
+        cards = _run_graph(
+            cypher, "collaborative",
+            user_id=user_id, min_votes=min_votes, min_rating=min_rating, max_rating=max_rating,
+            year_from=year_from, year_to=year_to, excl=excl_gids, limit=limit,
+        )
+    except Exception:
+        cards = []
     return json.dumps(cards, ensure_ascii=False)
 
 
@@ -652,6 +1136,147 @@ def _run_series_graph(cypher: str, source: str, **params) -> list:
     ]
 
 
+def _semantic_fallback_series(
+    semantic_query: str,
+    excl_gids: list[int],
+    min_rating: float,
+    max_rating: float,
+    year_from: int,
+    year_to: int,
+    min_votes: int,
+    limit: int,
+) -> list[dict]:
+    """
+    DİZİler için hibrit semantik yedek arama (Render'da yerel Ollama olmadığında veya
+    vektör index'i boş döndüğünde çalışır):
+      1) Neo4j :Series üzerinde Keyword + Overview/Tagline/Name eşleşmesi
+      2) TMDB /discover/tv (with_keywords) + /search/tv
+      3) Yerel series_data.json yedeği
+    """
+    terms = _extract_semantic_terms(semantic_query)
+    if not terms:
+        terms = [norm(semantic_query)[:40]] if norm(semantic_query) else []
+    out, seen = [], set()
+    excl_set = set(excl_gids or [])
+
+    # 1. Neo4j :Series üzerinde anahtar kelime + özet/başlık araması
+    if terms:
+        cypher = f"""
+        MATCH (movie:Series)
+        WHERE movie.vote_count >= $min_votes
+          AND movie.vote_average >= $min_rating AND movie.vote_average <= $max_rating
+          AND ($year_from = 0 OR movie.year >= $year_from)
+          AND ($year_to = 0 OR movie.year <= $year_to)
+          AND NOT EXISTS {{ MATCH (movie)-[:HAS_GENRE]->(x:Genre) WHERE x.id IN $excl }}
+        OPTIONAL MATCH (movie)-[:HAS_KEYWORD]->(k:Keyword)
+        WITH movie, collect(k.name_norm) AS kw_names,
+             toLower(coalesce(movie.overview, '')) AS ov,
+             toLower(coalesce(movie.tagline, '')) AS tg,
+             coalesce(movie.name_norm, '') AS tn
+        WITH movie,
+             size([t IN $terms WHERE any(kw IN kw_names WHERE kw CONTAINS t)]) AS kw_hits,
+             size([t IN $terms WHERE ov CONTAINS t OR tg CONTAINS t OR tn CONTAINS t]) AS txt_hits
+        WHERE (kw_hits + txt_hits) > 0
+        WITH movie, (kw_hits * 2.5 + txt_hits * 1.0) + 0.15 * {_WR_SERIES} AS score
+        RETURN {_SERIES_RETURN}, score
+        ORDER BY score DESC LIMIT $limit
+        """
+        try:
+            for c in _run_series_graph(
+                cypher, "semantic_series",
+                terms=terms, min_votes=min_votes, min_rating=min_rating, max_rating=max_rating,
+                year_from=year_from, year_to=year_to, excl=list(excl_set), limit=limit,
+            ):
+                if c["movie_id"] not in seen:
+                    seen.add(c["movie_id"])
+                    out.append(c)
+        except Exception:
+            pass
+
+    # 2. TMDB Keyword Discover (/discover/tv) + TMDB Metin Araması (/search/tv)
+    if len(out) < limit and terms:
+        kids = []
+        for t in terms[:3]:
+            kid = get_keyword_id(t)
+            if kid is not None and str(kid) not in kids:
+                kids.append(str(kid))
+        if kids:
+            params = {
+                "include_adult": "false",
+                "language": "en-US",
+                "sort_by": "vote_count.desc",
+                "vote_count.gte": max(int(min_votes), 1),
+                "with_keywords": "|".join(kids),
+            }
+            if excl_set:
+                params["without_genres"] = "|".join(map(str, excl_set))
+            if min_rating > 0:
+                params["vote_average.gte"] = min_rating
+            if max_rating < 10:
+                params["vote_average.lte"] = max_rating
+            if year_from:
+                params["first_air_date.gte"] = f"{year_from}-01-01"
+            if year_to:
+                params["first_air_date.lte"] = f"{year_to}-12-31"
+            try:
+                res = tmdb_get("/discover/tv", page=1, **params).get("results", [])
+                res = [r for r in res if not (set(r.get("genre_ids", [])) & excl_set)]
+                res.sort(
+                    key=lambda r: bayes_score(r.get("vote_average"), r.get("vote_count"), m=SERIES_BAYES_M),
+                    reverse=True,
+                )
+                for r in res:
+                    c = _series_card_from_tmdb(r, "semantic_series")
+                    if c["movie_id"] not in seen:
+                        seen.add(c["movie_id"])
+                        out.append(c)
+            except Exception:
+                pass
+
+    if len(out) < limit and terms:
+        try:
+            q_str = " ".join(terms[:2])
+            res = tmdb_get("/search/tv", query=q_str, language="en-US", include_adult="false").get("results", [])
+            valid_res = []
+            for r in res:
+                vc = int(r.get("vote_count") or 0)
+                va = float(r.get("vote_average") or 0.0)
+                fd = (r.get("first_air_date") or "")[:4]
+                yr = int(fd) if fd.isdigit() else 0
+                if vc < min_votes or va < min_rating or va > max_rating:
+                    continue
+                if year_from and (not yr or yr < year_from):
+                    continue
+                if year_to and (not yr or yr > year_to):
+                    continue
+                if set(r.get("genre_ids", [])) & excl_set:
+                    continue
+                valid_res.append(r)
+            valid_res.sort(
+                key=lambda r: bayes_score(r.get("vote_average"), r.get("vote_count"), m=SERIES_BAYES_M),
+                reverse=True,
+            )
+            for r in valid_res:
+                c = _series_card_from_tmdb(r, "semantic_series")
+                if c["movie_id"] not in seen:
+                    seen.add(c["movie_id"])
+                    out.append(c)
+        except Exception:
+            pass
+
+    # 3. Yerel series_data.json yedeği
+    if len(out) < limit and terms:
+        for c in _search_local_json(
+            True, terms, list(excl_set), min_rating, max_rating,
+            year_from, year_to, min_votes, limit, "semantic_series",
+        ):
+            if c["movie_id"] not in seen:
+                seen.add(c["movie_id"])
+                out.append(c)
+
+    return out[:limit]
+
+
 def fetch_series_card(series_id, fallback: dict | None = None) -> dict | None:
     """Dizi için TAM kart (fragman, platform, kadro, sezon/bölüm). Yalnızca son seçilenler için çağrılır."""
     fallback = fallback or {}
@@ -729,7 +1354,10 @@ def search_series_by_filters(
         params["with_genres"] = ",".join(map(str, incl))
     if excl:
         params["without_genres"] = "|".join(map(str, excl))
-    kid = get_keyword_id(keyword or (kw_from_genre[0] if kw_from_genre else "")) if (keyword or kw_from_genre) else None
+
+    explicit_kid = get_keyword_id(keyword) if keyword else None
+    genre_kid = get_keyword_id(kw_from_genre[0]) if (not explicit_kid and kw_from_genre) else None
+    kid = explicit_kid or genre_kid
     if kid:
         params["with_keywords"] = kid
     if min_rating > 0:
@@ -745,6 +1373,7 @@ def search_series_by_filters(
 
     def fetch(p):
         out = []
+        seen_ids = set()
         for page in (1, 2):
             if len(out) >= limit:
                 break
@@ -752,21 +1381,56 @@ def search_series_by_filters(
                 res = tmdb_get("/discover/tv", page=page, **p).get("results", [])
             except Exception:
                 break
-            out.extend(res)
+            for r in res:
+                if r.get("id") and r["id"] not in seen_ids:
+                    seen_ids.add(r["id"])
+                    out.append(r)
             if len(res) < 20:
                 break
+        # Düşük oylu şişirilmiş animasyon/spin-off kayıtlarının ünlü dizileri ezmesini önle
+        if p.get("sort_by") == "vote_average.desc":
+            try:
+                pop_p = {**p, "sort_by": "popularity.desc"}
+                for r in tmdb_get("/discover/tv", page=1, **pop_p).get("results", []):
+                    if r.get("id") and r["id"] not in seen_ids:
+                        seen_ids.add(r["id"])
+                        out.append(r)
+            except Exception:
+                pass
+            out.sort(
+                key=lambda r: bayes_score(r.get("vote_average"), r.get("vote_count"), m=SERIES_BAYES_M),
+                reverse=True,
+            )
         return out
 
     relaxed = []
     series = fetch(params)
+
+    # Açık keyword ("vampire" vb.) verildiyse ÖNCE türleri gevşet, keyword'ü ASLA ilk adımda silme!
+    if not series and explicit_kid:
+        if len(incl) > 1:
+            params["with_genres"] = "|".join(map(str, incl))
+            relaxed.append("genres_and_to_or")
+            series = fetch(params)
+        if not series and incl:
+            params.pop("with_genres", None)
+            relaxed.append("genres_dropped_for_keyword")
+            series = fetch(params)
+
     if not series and kid:
+        if incl:
+            params["with_genres"] = ",".join(map(str, incl))
         params.pop("with_keywords", None)
         relaxed.append("keyword")
         series = fetch(params)
     if not series and len(incl) > 1:
         params["with_genres"] = "|".join(map(str, incl))
-        relaxed.append("genres_and_to_or")
+        if "genres_and_to_or" not in relaxed:
+            relaxed.append("genres_and_to_or")
         series = fetch(params)
+
+    excl_set = set(excl)
+    series = [s for s in series if not (set(s.get("genre_ids", [])) & excl_set)]
     return json.dumps([_series_card_from_tmdb(s, "tmdb_filter", relaxed or None) for s in series[:limit]],
                       ensure_ascii=False)
 
@@ -778,7 +1442,10 @@ def search_series_in_graph(category: str, search_value: str, limit: int = DEFAUL
     Yerel Neo4j grafında DİZİ araması (hızlı, hafif kartlar).
     category: 'Director' (dizinin YARATICISI) | 'Actor' | 'Genre' | 'Keyword' | 'Similar'.
     """
-    val = norm(search_value or "")
+    raw_val = (search_value or "").strip()
+    val = norm(raw_val)
+    if category == "Keyword":
+        val = norm(_TR_EN_THEME_MAP.get(val, _singularize_en(val)))
     gids = tv_genre_split(search_value)[0] if category == "Genre" else []
     heads = {
         "Director": "MATCH (p:Person)-[:CREATED]->(movie:Series) WHERE p.name_norm CONTAINS $val "
@@ -799,11 +1466,15 @@ def search_series_in_graph(category: str, search_value: str, limit: int = DEFAUL
     if not head or (category == "Genre" and not gids):
         return "[]"
     cypher = f"{head} RETURN {_SERIES_RETURN}, {_WR_SERIES} AS wr ORDER BY wr DESC LIMIT $limit"
+    cards = []
     try:
         cards = _run_series_graph(cypher, f"graph_series_{category.lower()}", val=val, gids=gids,
                                   min_votes=min_votes, limit=limit)
-    except Exception as e:
-        return f"Dizi graf arama hatası: {e}"
+    except Exception:
+        cards = []
+
+    if not cards and category == "Keyword" and val:
+        cards = _semantic_fallback_series(val, [], 0.0, 10.0, 0, 0, min_votes, limit)
     return json.dumps(cards, ensure_ascii=False)
 
 
@@ -821,25 +1492,38 @@ def search_series_semantically(
     """
     DİZİler için anlamsal (vektör) arama: tema, atmosfer, olay örgüsü. semantic_query İNGİLİZCE olmalı.
     """
-    if not embeddings_model:
-        return "Semantik arama modeli aktif değil."
-    try:
-        vec = embeddings_model.embed_query(QUERY_PREFIX + semantic_query)
-        cypher = f"""
-        CALL db.index.vector.queryNodes('{SERIES_VECTOR_INDEX}', $k, $vec) YIELD node AS movie, score
-        WHERE movie.vote_count >= $min_votes
-          AND movie.vote_average >= $min_rating AND movie.vote_average <= $max_rating
-          AND ($year_from = 0 OR movie.year >= $year_from)
-          AND ($year_to = 0 OR movie.year <= $year_to)
-          AND NOT EXISTS {{ MATCH (movie)-[:HAS_GENRE]->(x:Genre) WHERE x.id IN $excl }}
-        RETURN {_SERIES_RETURN}, score
-        ORDER BY score DESC LIMIT $limit
-        """
-        cards = _run_series_graph(cypher, "semantic_series", vec=vec, k=150, min_votes=min_votes,
-                                  min_rating=min_rating, max_rating=max_rating, year_from=year_from,
-                                  year_to=year_to, excl=tv_genre_split(exclude_genres)[0], limit=limit)
-    except Exception as e:
-        return f"Dizi semantik arama hatası: {e}"
+    excl_gids = tv_genre_split(exclude_genres)[0]
+    cards = []
+    if embeddings_model is not None:
+        try:
+            vec = embeddings_model.embed_query(QUERY_PREFIX + semantic_query)
+            cypher = f"""
+            CALL db.index.vector.queryNodes('{SERIES_VECTOR_INDEX}', $k, $vec) YIELD node AS movie, score
+            WHERE movie.vote_count >= $min_votes
+              AND movie.vote_average >= $min_rating AND movie.vote_average <= $max_rating
+              AND ($year_from = 0 OR movie.year >= $year_from)
+              AND ($year_to = 0 OR movie.year <= $year_to)
+              AND NOT EXISTS {{ MATCH (movie)-[:HAS_GENRE]->(x:Genre) WHERE x.id IN $excl }}
+            RETURN {_SERIES_RETURN}, score
+            ORDER BY score DESC LIMIT $limit
+            """
+            cards = _run_series_graph(cypher, "semantic_series", vec=vec, k=150, min_votes=min_votes,
+                                      min_rating=min_rating, max_rating=max_rating, year_from=year_from,
+                                      year_to=year_to, excl=excl_gids, limit=limit)
+        except Exception:
+            cards = []
+
+    if not cards:
+        cards = _semantic_fallback_series(
+            semantic_query=semantic_query,
+            excl_gids=excl_gids,
+            min_rating=min_rating,
+            max_rating=max_rating,
+            year_from=year_from,
+            year_to=year_to,
+            min_votes=min_votes,
+            limit=limit,
+        )
     return json.dumps(cards, ensure_ascii=False)
 
 
@@ -857,7 +1541,8 @@ def get_similar_series(series_title: str, year: int = 0, limit: int = DEFAULT_LI
         for r in recs:
             c = _series_card_from_tmdb(r, "tmdb_rec")
             if c["movie_id"] not in seen:
-                seen.add(c["movie_id"]); out.append(c)
+                seen.add(c["movie_id"])
+                out.append(c)
     except Exception:
         pass
     try:
@@ -870,7 +1555,8 @@ def get_similar_series(series_title: str, year: int = 0, limit: int = DEFAULT_LI
         """
         for c in _run_series_graph(cypher, "vector_neighbor_series", id=sid, k=60, limit=limit):
             if c["movie_id"] not in seen:
-                seen.add(c["movie_id"]); out.append(c)
+                seen.add(c["movie_id"])
+                out.append(c)
     except Exception:
         pass
     return json.dumps(out[: limit * 2], ensure_ascii=False)

@@ -5,6 +5,10 @@ aynı embedding ayarlarını ve aynı kalite skorunu buradan kullanır.
 """
 import os
 import unicodedata
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 # ---------- Metin normalizasyonu (SADECE arama alanları için) ----------
 def norm(text):
@@ -31,13 +35,30 @@ VECTOR_INDEX = "movie_overview_index"
 
 EMBED_PROVIDER = os.getenv("EMBED_PROVIDER", "ollama")
 
+
 def get_embedder():
-    if EMBED_PROVIDER == "openai":
+    provider = (os.getenv("EMBED_PROVIDER") or EMBED_PROVIDER).strip().lower()
+    model = os.getenv("EMBED_MODEL") or EMBED_MODEL
+    dim = int(os.getenv("EMBED_DIM") or EMBED_DIM)
+
+    if provider == "openai" or (os.getenv("OPENAI_API_KEY") and model.startswith("text-embedding")):
         from langchain_openai import OpenAIEmbeddings   # OPENAI_API_KEY env'den okunur
-        return OpenAIEmbeddings(model=EMBED_MODEL, dimensions=EMBED_DIM)
+        return OpenAIEmbeddings(model=model, dimensions=dim)
+
     from langchain_ollama import OllamaEmbeddings
-    return OllamaEmbeddings(model=EMBED_MODEL,
-                            base_url=os.getenv("OLLAMA_EMBED_HOST", "http://localhost:11434"))
+    base_url = (
+        os.getenv("OLLAMA_EMBED_HOST")
+        or os.getenv("OLLAMA_HOST")
+        or "http://localhost:11434"
+    ).rstrip("/")
+    client_kwargs = {
+        "trust_env": False,
+        "timeout": float(os.getenv("EMBED_TIMEOUT", "5.0")),
+    }
+    ollama_key = os.getenv("OLLAMA_API_KEY")
+    if ollama_key:
+        client_kwargs["headers"] = {"Authorization": f"Bearer {ollama_key}"}
+    return OllamaEmbeddings(model=model, base_url=base_url, client_kwargs=client_kwargs)
 
 
 def movie_doc(m: dict) -> str:

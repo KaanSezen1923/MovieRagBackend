@@ -18,7 +18,7 @@ import bcrypt
 import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from exponent_server_sdk import PushClient, PushMessage
-import httpx 
+import httpx
 
 from shared import ctx, chat_statuses, MCPSessionPool
 from client import (
@@ -32,28 +32,36 @@ from auth import (
 from logger import logger
 
 # --- KATALOG ROUTER'I İÇERİ AKTARILIYOR ---
-from catalog import router as catalog_router
+from catalog import router as catalog_router, aclose as catalog_aclose
 
 load_dotenv()
 
 _REQUIRED_ENV_VARS = [
-    "DB_NAME", "DB_USER", "DB_PASSWORD", "DB_HOST",
     "NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD",
-    "AUTH_KEY",          
-    "WHISPER_API_KEY",   
+    "AUTH_KEY",
 ]
+
 
 def _validate_env() -> None:
     missing = [k for k in _REQUIRED_ENV_VARS if not os.getenv(k)]
+    has_db = bool(os.getenv("DATABASE_URL")) or all(
+        os.getenv(k) for k in ("DB_NAME", "DB_USER", "DB_PASSWORD", "DB_HOST")
+    )
+    if not has_db:
+        missing.extend(
+            k for k in ("DB_NAME", "DB_USER", "DB_PASSWORD", "DB_HOST") if not os.getenv(k)
+        )
     if missing:
         raise RuntimeError(
             "Eksik ortam değişkenleri: " + ", ".join(missing) +
             "\n.env dosyanı veya deployment ortamının env değişkenlerini kontrol et."
         )
 
+
 _validate_env()
 
-client = Groq(api_key=os.environ.get("WHISPER_API_KEY"))
+_whisper_key = os.environ.get("WHISPER_API_KEY")
+client = Groq(api_key=_whisper_key) if _whisper_key else None
 
 DB_POOL_MIN_SIZE = int(os.getenv("DB_POOL_MIN_SIZE", "2"))
 DB_POOL_MAX_SIZE = int(os.getenv("DB_POOL_MAX_SIZE", "10"))
@@ -61,6 +69,7 @@ MCP_POOL_SIZE = int(os.getenv("MCP_POOL_SIZE", "3"))
 
 # --- YENİ: KULLANICI BAZLI KİLİT SÖZLÜĞÜ (LOCKS) ---
 user_workflow_locks = {}
+
 
 def get_user_lock(user_id: int) -> asyncio.Lock:
     if user_id not in user_workflow_locks:
@@ -78,23 +87,36 @@ class FavoriteRequest(BaseModel):
     imdb_rating: str = None
     trailer_url: str = None
 
+
 class TranscriptionResponse(BaseModel):
     text: str
     success: bool
 
+
 class TokenRequest(BaseModel):
     token: str
 
+
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_MB", "15")) * 1024 * 1024
 ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".webm", ".flac"}
+
 
 def remove_file(path: str):
     if os.path.exists(path):
         os.remove(path)
 
+
 def _mcp_env() -> dict:
-    keys = ["AUTH_KEY", "NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"]
-    return {k: os.getenv(k) for k in keys if os.getenv(k)}
+    """
+    Render ve diğer bulut ortamlarında tanımlanan TÜM ortam değişkenlerini
+    (EMBED_PROVIDER, EMBED_MODEL, OLLAMA_EMBED_HOST, OLLAMA_HOST, OLLAMA_API_KEY,
+    OPENAI_API_KEY, NEO4J_DATABASE, SERIES_VECTOR_INDEX vb. dahil) MCP alt sürecine aktarır.
+    """
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    return env
+
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS recommendation_feedback (
@@ -114,29 +136,43 @@ CREATE INDEX IF NOT EXISTS idx_rec_feedback_user ON recommendation_feedback (use
 ALTER TABLE recommendations ADD COLUMN IF NOT EXISTS source TEXT;
 """
 
+
 async def _ensure_schema() -> None:
     async with ctx.db_pool.acquire() as conn:
         await conn.execute(_SCHEMA_SQL)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    server_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py")
     server_params = StdioServerParameters(
         command=sys.executable,
-        args=["server.py"],
+        args=[server_script],
         env=_mcp_env(),
     )
     scheduler = AsyncIOScheduler()
 
     logger.info("DB havuzu, MCP session havuzu ve Scheduler başlatılıyor...")
     try:
-        ctx.db_pool = await asyncpg.create_pool(
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD"),
-            host=os.getenv("DB_HOST"),
-            min_size=DB_POOL_MIN_SIZE,
-            max_size=DB_POOL_MAX_SIZE,
-        )
+        db_url = os.getenv("DATABASE_URL")
+        if db_url:
+            ctx.db_pool = await asyncpg.create_pool(
+                dsn=db_url,
+                min_size=DB_POOL_MIN_SIZE,
+                max_size=DB_POOL_MAX_SIZE,
+                command_timeout=30,
+            )
+        else:
+            ctx.db_pool = await asyncpg.create_pool(
+                database=os.getenv("DB_NAME"),
+                user=os.getenv("DB_USER"),
+                password=os.getenv("DB_PASSWORD"),
+                host=os.getenv("DB_HOST"),
+                port=int(os.getenv("DB_PORT", "5432")),
+                min_size=DB_POOL_MIN_SIZE,
+                max_size=DB_POOL_MAX_SIZE,
+                command_timeout=30,
+            )
         logger.info(f"Postgres pool hazır (min={DB_POOL_MIN_SIZE}, max={DB_POOL_MAX_SIZE}).")
         await _ensure_schema()
 
@@ -155,11 +191,13 @@ async def lifespan(app: FastAPI):
         if scheduler.running:
             scheduler.shutdown()
         logger.info("Sunucu kapatılıyor, kaynaklar temizleniyor...")
+        await catalog_aclose()
         if ctx.session:
             await ctx.session.aclose()
         if ctx.db_pool:
             await ctx.db_pool.close()
         await ctx.exit_stack.aclose()
+
 
 app = FastAPI(title="Movie Explorer AI API", lifespan=lifespan)
 
@@ -180,6 +218,7 @@ app.add_middleware(
 # /catalog/... (home, browse, search, detay) burada dahil ediliyor.
 app.include_router(catalog_router)
 
+
 @app.get("/health")
 async def health():
     checks = {"db": False, "mcp": False}
@@ -198,6 +237,7 @@ async def health():
     status_code = 200 if healthy else 503
     return JSONResponse(status_code=status_code, content={"status": "ok" if healthy else "degraded", "checks": checks})
 
+
 # --- KULLANICI / YETKİLENDİRME (AUTH) İŞLEMLERİ ---
 
 class UserSignup(BaseModel):
@@ -210,16 +250,20 @@ class UserSignup(BaseModel):
     def truncate_password(cls, v: str) -> str:
         return v[:71]
 
+
 class UserLogin(BaseModel):
     username: str
     password: str
 
+
 class UpdateProfileRequest(BaseModel):
     new_username: str
+
 
 class ChangePasswordRequest(BaseModel):
     old_password: str
     new_password: str
+
 
 def hash_password(password: str):
     pwd_bytes = password.encode('utf-8')
@@ -227,10 +271,12 @@ def hash_password(password: str):
     hashed = bcrypt.hashpw(pwd_bytes, salt)
     return hashed.decode('utf-8')
 
+
 def verify_password(plain_password, hashed_password):
     password_byte = plain_password.encode('utf-8')
     hashed_byte = hashed_password.encode('utf-8')
     return bcrypt.checkpw(password_byte, hashed_byte)
+
 
 @app.post("/signup")
 async def signup(user: UserSignup, request: Request):
@@ -259,6 +305,7 @@ async def signup(user: UserSignup, request: Request):
         logger.error("Kayıt (signup) hatası", exc_info=True)
         raise HTTPException(status_code=500, detail="Kayıt işlemi sırasında bir hata oluştu.")
 
+
 @app.post("/login")
 async def login(user: UserLogin, request: Request):
     login_rate_limiter.check(client_ip(request))
@@ -283,6 +330,7 @@ async def login(user: UserLogin, request: Request):
         logger.error("Giriş (login) hatası", exc_info=True)
         raise HTTPException(status_code=500, detail="Giriş işlemi sırasında bir hata oluştu.")
 
+
 @app.post("/update-profile")
 async def update_profile(req: UpdateProfileRequest, current_user: CurrentUser = Depends(get_current_user)):
     try:
@@ -297,6 +345,7 @@ async def update_profile(req: UpdateProfileRequest, current_user: CurrentUser = 
         raise
     except Exception:
         raise HTTPException(status_code=500, detail="Profil güncellenemedi.")
+
 
 @app.post("/change-password")
 async def change_password(req: ChangePasswordRequest, current_user: CurrentUser = Depends(get_current_user)):
@@ -321,10 +370,12 @@ class ChatRequest(BaseModel):
     prompt: str
     session_id: str
 
+
 class ChatResponse(BaseModel):
     answer: str
     tool_calls: list = []
     tool_results: list = []
+
 
 def _compact_content(role: str, content: str) -> str:
     if role != "assistant":
@@ -339,6 +390,7 @@ def _compact_content(role: str, content: str) -> str:
     text = data.get("text", "")
     return f"{text} (Önerilen filmler: {titles})" if titles else text
 
+
 async def get_recent_chats(user_id: int, limit: int = 10):
     async with ctx.db_pool.acquire() as conn:
         rows = await conn.fetch(
@@ -347,10 +399,12 @@ async def get_recent_chats(user_id: int, limit: int = 10):
         )
     return [{"role": r["role"], "content": _compact_content(r["role"], r["content"])} for r in reversed(rows)]
 
+
 async def get_user_persona(user_id: int):
     async with ctx.db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT persona_summary FROM user_profiles WHERE user_id = $1", user_id)
     return row[0] if row else None
+
 
 async def get_blocked_and_seen(user_id: int):
     """blocked: dislike edilenler (sert engel). seen: favoriler + gösterilmiş her şey (skorda hafif ceza)."""
@@ -360,6 +414,7 @@ async def get_blocked_and_seen(user_id: int):
     blocked = [str(r["movie_id"]) for r in fb if r["feedback"] == -1]
     seen = [str(r["movie_id"]) for r in fb] + [str(r["movie_id"]) for r in favs]
     return blocked, seen
+
 
 @app.post("/chat")
 async def chat(
@@ -409,7 +464,7 @@ async def chat(
         await conn.execute("INSERT INTO chat_history (user_id, role, content, session_id) VALUES ($1, $2, $3, $4)", current_user.user_id, "user", request.prompt, request.session_id)
         await conn.execute("INSERT INTO chat_history (user_id, role, content, session_id) VALUES ($1, $2, $3, $4)", current_user.user_id, "assistant", answer, request.session_id)
         msg_count = await conn.fetchval("SELECT COUNT(*) FROM chat_history WHERE user_id = $1", current_user.user_id)
-    
+
     await _log_chat_impressions(current_user.user_id, request.session_id, answer)
 
     # Tetikleyici, her 5 mesajda çalışır. Ancak artık görev içinde Kilit mekanizması var.
@@ -417,6 +472,7 @@ async def chat(
         background_tasks.add_task(profile_and_recommendation_workflow, current_user.user_id)
 
     return {"answer": answer, "tool_calls": tool_calls, "tool_results": tool_results}
+
 
 # --- ÖNERİ GERİ BİLDİRİMİ (LIKE / DISLIKE) ---
 
@@ -427,7 +483,9 @@ class FeedbackRequest(BaseModel):
     title: Optional[str] = None
     session_id: Optional[str] = None
 
+
 _FEEDBACK_VALUE = {"like": 1, "dislike": -1, "clear": None}
+
 
 async def _log_chat_impressions(user_id: int, session_id: str, answer: str) -> None:
     """Sohbette gösterilen filmleri 'gösterildi' olarak kaydeder (like oranının paydası). Asla chat'i bozmaz."""
@@ -449,6 +507,7 @@ async def _log_chat_impressions(user_id: int, session_id: str, answer: str) -> N
     except Exception:
         logger.warning("Impression kaydı başarısız", exc_info=True)
 
+
 @app.post("/feedback")
 async def submit_feedback(req: FeedbackRequest, current_user: CurrentUser = Depends(get_current_user)):
     value = _FEEDBACK_VALUE[req.feedback]
@@ -469,6 +528,7 @@ async def submit_feedback(req: FeedbackRequest, current_user: CurrentUser = Depe
         logger.error("Feedback kaydı hatası", exc_info=True)
         raise HTTPException(status_code=500, detail="Geri bildirim kaydedilemedi.")
 
+
 @app.get("/feedback/ids")
 async def get_feedback_ids(current_user: CurrentUser = Depends(get_current_user)):
     """UI'ın sayfa yenilenince buton durumlarını geri yüklemesi için."""
@@ -481,6 +541,7 @@ async def get_feedback_ids(current_user: CurrentUser = Depends(get_current_user)
         "liked": [r["movie_id"] for r in rows if r["feedback"] == 1],
         "disliked": [r["movie_id"] for r in rows if r["feedback"] == -1],
     }
+
 
 @app.get("/feedback/stats")
 async def get_feedback_stats(current_user: CurrentUser = Depends(get_current_user)):
@@ -502,6 +563,7 @@ async def get_feedback_stats(current_user: CurrentUser = Depends(get_current_use
             "like_per_shown": round(r["likes"] / r["shown"], 3) if r["shown"] else None,
         }
     return out
+
 
 @app.get("/sessions")
 async def get_sessions(current_user: CurrentUser = Depends(get_current_user), limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)):
@@ -526,6 +588,7 @@ async def get_sessions(current_user: CurrentUser = Depends(get_current_user), li
     except Exception:
         raise HTTPException(status_code=500, detail="Oturumlar alınamadı.")
 
+
 @app.get("/chat/suggestions")
 async def get_chat_suggestions(current_user: CurrentUser = Depends(get_current_user)):
     default_suggestions = ["Bilim kurgu filmi öner", "Nolan filmi öner", "Tim Burton filmi öner"]
@@ -544,6 +607,7 @@ async def get_chat_suggestions(current_user: CurrentUser = Depends(get_current_u
     except Exception:
         return {"suggestions": default_suggestions}
 
+
 @app.get("/chat/{session_id}")
 async def get_chat_history(session_id: str, current_user: CurrentUser = Depends(get_current_user), limit: int = Query(default=100), offset: int = Query(default=0)):
     try:
@@ -556,7 +620,6 @@ async def get_chat_history(session_id: str, current_user: CurrentUser = Depends(
         raise HTTPException(status_code=500, detail="Sohbet geçmişi alınamadı.")
 
 
-
 @app.delete("/chat/{session_id}")
 async def delete_session(session_id: str, current_user: CurrentUser = Depends(get_current_user)):
     async with ctx.db_pool.acquire() as conn:
@@ -564,22 +627,24 @@ async def delete_session(session_id: str, current_user: CurrentUser = Depends(ge
     return {"status": "success"}
 
 
-
 @app.get("/chat/status/{session_id}")
 async def get_chat_status(session_id: str, current_user: CurrentUser = Depends(get_current_user)):
     return {"status": chat_statuses.get(session_id, "")}
 
+
 @app.post("/transcribe", response_model=TranscriptionResponse)
 async def transcribe_audio(audio: UploadFile = File(...), current_user: CurrentUser = Depends(get_current_user)):
+    if client is None:
+        raise HTTPException(status_code=503, detail="Ses tanıma servisi yapılandırılmamış.")
     temp_file_path = None
     try:
         file_ext = os.path.splitext(audio.filename or "")[1].lower() or ".wav"
         if file_ext not in ALLOWED_AUDIO_EXTENSIONS:
             raise HTTPException(status_code=400, detail="Desteklenmeyen ses formatı.")
-        
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
             total = 0
-            while chunk := await audio.read(1024 * 1024): 
+            while chunk := await audio.read(1024 * 1024):
                 total += len(chunk)
                 if total > MAX_AUDIO_BYTES:
                     raise HTTPException(status_code=413, detail="Dosya çok büyük.")
@@ -610,12 +675,13 @@ async def get_user_favorites(user_id: int, limit: int | None = None, offset: int
         favorites = [{
             "movie_id": r["movie_id"], "Film": r["title"], "Türler": r["genres"],
             "Director": r["director"], "Cast": r["cast_members"], "Poster": r["poster_url"],
-            "TMDB Puanı": r["imdb_rating"], "Fragman": r["trailer_url"], 
+            "TMDB Puanı": r["imdb_rating"], "Fragman": r["trailer_url"],
         } for r in rows]
 
         return {"favorites": favorites, "total": total}
     except Exception:
         raise HTTPException(status_code=500, detail="Favoriler alınamadı.")
+
 
 @app.post("/favorites")
 async def add_favorite(fav: FavoriteRequest, current_user: CurrentUser = Depends(get_current_user)):
@@ -623,9 +689,10 @@ async def add_favorite(fav: FavoriteRequest, current_user: CurrentUser = Depends
         await conn.execute(
             """INSERT INTO favorites (user_id, movie_id, title, genres, director, cast_members, poster_url, imdb_rating, trailer_url)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (user_id, movie_id) DO NOTHING""",
-            current_user.user_id, fav.movie_id, fav.title, fav.genres, fav.director, fav.cast_members, fav.poster_url, fav.imdb_rating, fav.trailer_url 
+            current_user.user_id, fav.movie_id, fav.title, fav.genres, fav.director, fav.cast_members, fav.poster_url, fav.imdb_rating, fav.trailer_url
         )
     return {"status": "success"}
+
 
 @app.delete("/favorites/{movie_id}")
 async def delete_favorite(movie_id: str, current_user: CurrentUser = Depends(get_current_user)):
@@ -633,9 +700,11 @@ async def delete_favorite(movie_id: str, current_user: CurrentUser = Depends(get
         await conn.execute("DELETE FROM favorites WHERE user_id = $1 AND movie_id = $2", current_user.user_id, movie_id)
     return {"status": "success"}
 
+
 @app.get("/favorites")
 async def get_favorites(current_user: CurrentUser = Depends(get_current_user), limit: int = Query(default=20), offset: int = Query(default=0)):
     return await get_user_favorites(current_user.user_id, limit=limit, offset=offset)
+
 
 @app.get("/favorites/ids")
 async def get_favorite_ids(current_user: CurrentUser = Depends(get_current_user)):
@@ -652,17 +721,20 @@ async def update_push_token(req: TokenRequest, current_user: CurrentUser = Depen
         await conn.execute("UPDATE users SET expo_push_token = $1 WHERE id = $2", req.token, current_user.user_id)
     return {"status": "success"}
 
+
 @app.get("/recommendations")
 async def get_user_recommendations(current_user: CurrentUser = Depends(get_current_user)):
     async with ctx.db_pool.acquire() as conn:
         rows = await conn.fetch("SELECT id, movie_id, title, message, created_at, is_read FROM recommendations WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50", current_user.user_id)
     return [{"id": r["id"], "movie_id": r["movie_id"], "title": r["title"], "body": r["message"], "date": r["created_at"], "is_read": r["is_read"]} for r in rows]
 
+
 @app.patch("/recommendations/read")
 async def mark_recommendations_read(current_user: CurrentUser = Depends(get_current_user)):
     async with ctx.db_pool.acquire() as conn:
         await conn.execute("UPDATE recommendations SET is_read = true WHERE user_id = $1", current_user.user_id)
     return {"status": "success"}
+
 
 async def profile_update_task(user_id: int):
     try:
@@ -714,6 +786,7 @@ async def profile_update_task(user_id: int):
     except Exception as e:
         logger.error(f"Profilleme hatası (user_id={user_id})", exc_info=True)
 
+
 def _parse_cards(result) -> list:
     try:
         data = json.loads(result.content[0].text)
@@ -721,8 +794,10 @@ def _parse_cards(result) -> list:
     except Exception:
         return []
 
+
 async def get_movie_card_by_title(title: str):
-    if not title: return None
+    if not title:
+        return None
     try:
         result = await ctx.session.call_tool("get_movie_card", {"title": title, "year": 0})
         cards = _parse_cards(result)
@@ -730,6 +805,7 @@ async def get_movie_card_by_title(title: str):
     except Exception:
         logger.warning(f"Film kartı alınamadı: {title!r}", exc_info=True)
         return None
+
 
 async def get_movie_card_by_id(movie_id):
     """Başlık araması yerine TMDB id'siyle tam kart (aynı adlı filmlerin karışmasını önler)."""
@@ -744,6 +820,7 @@ async def get_movie_card_by_id(movie_id):
     except Exception:
         logger.warning(f"Film kartı (id) alınamadı: {movie_id!r}", exc_info=True)
         return None
+
 
 async def generate_and_save_recommendation_task(user_id: int):
     try:
@@ -785,10 +862,11 @@ async def generate_and_save_recommendation_task(user_id: int):
     except Exception:
         logger.error(f"Öneri üretme hatası (user={user_id})", exc_info=True)
 
+
 # --- KİLİT MEKANİZMASI ENTEGRE EDİLMİŞ İŞ AKIŞI ---
 async def profile_and_recommendation_workflow(user_id: int):
     lock = get_user_lock(user_id)
-    
+
     # Eğer kilitliyse (yani bu kullanıcının önceki profilleme görevi hala sürüyorsa) çıkış yap.
     if lock.locked():
         logger.info(f"Kullanıcı (id={user_id}) için profilleme görevi zaten çalışıyor, Kilit atlandı.")
@@ -800,6 +878,7 @@ async def profile_and_recommendation_workflow(user_id: int):
             await generate_and_save_recommendation_task(user_id)
         except Exception:
             logger.error(f"Workflow çalıştırılırken hata (user={user_id})", exc_info=True)
+
 
 async def send_random_notifications():
     try:
@@ -827,6 +906,7 @@ async def send_random_notifications():
                     logger.error(f"Push gönderilemedi (rec_id={row['id']})", exc_info=True)
     except Exception:
         logger.error("Bildirim döngüsü hatası", exc_info=True)
+
 
 if __name__ == "__main__":
     uvicorn.run(

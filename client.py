@@ -20,6 +20,9 @@ Düzeltilen hatalar:
     ("Kasvetin içinde kaybolmuş hissettiğin..."). Artık yalnızca açıkça söylenmişse doldurulur.
   * Metin ve liste aynı LLM çağrısından gelir; 'uygun olmayanları eklemedim' deyip 5 film
     döndürme çelişkisi (Q45) ortadan kalkar. Hiç uygun aday yoksa boş liste + dürüst mesaj.
+  * Konu/tema sorgularında (örn. "vampir dizileri öner") QuerySpec.keyword çıkarımı ve otomatik
+    keyword algılama eklendi; filtre ve graf araçlarına keyword aktarılır, keyword gevşetilmiş
+    (relaxed=["keyword"]) genel tür dolgularının RRF skoru düşürülür.
 """
 import asyncio
 import json
@@ -38,6 +41,7 @@ from pydantic import BaseModel, Field, ValidationError
 from uvicorn import logging
 from logger import logger
 from shared import GraphState, chat_statuses, ctx   # TEK GraphState tanımı (intent_data dahil)
+from movie_common import norm
 
 try:
     from reranker import rerank as _rerank
@@ -86,6 +90,54 @@ _GENRE_CANON.update({"sci-fi": "Science Fiction", "scifi": "Science Fiction", "s
                      "korku": "Horror", "müzik": "Music", "gizem": "Mystery", "romantik": "Romance",
                      "gerilim": "Thriller", "savaş": "War"})
 
+_PROMPT_KEYWORD_MAP = {
+    "vampir": "vampire",
+    "vampire": "vampire",
+    "zombi": "zombie",
+    "zombie": "zombie",
+    "kurt adam": "werewolf",
+    "kurtadam": "werewolf",
+    "werewolf": "werewolf",
+    "cadi": "witch",
+    "witch": "witch",
+    "hayalet": "ghost",
+    "seri katil": "serial killer",
+    "serial killer": "serial killer",
+    "zamanda yolculuk": "time travel",
+    "zaman yolculugu": "time travel",
+    "time travel": "time travel",
+    "siberpunk": "cyberpunk",
+    "cyberpunk": "cyberpunk",
+    "banka soygunu": "bank robbery",
+    "soygun": "heist",
+    "yapay zeka": "artificial intelligence",
+    "artificial intelligence": "artificial intelligence",
+    "uzayli": "alien",
+    "astronot": "astronaut",
+    "hapishane": "prison",
+    "distopya": "dystopia",
+    "distopik": "dystopia",
+    "kiyamet sonrasi": "post-apocalyptic",
+    "hafiza kaybi": "amnesia",
+    "deniz feneri": "lighthouse",
+    "ejderha": "dragon",
+    "suikastci": "assassin",
+    "dedektif": "detective",
+    "mahkeme": "courtroom",
+    "hayatta kalma": "survival",
+    "simulasyon": "simulation",
+}
+
+
+def _infer_keyword_from_text(*texts: Optional[str]) -> Optional[str]:
+    joined = norm(" ".join(t for t in texts if t))
+    if not joined:
+        return None
+    for pat, kw in sorted(_PROMPT_KEYWORD_MAP.items(), key=lambda x: -len(x[0])):
+        if re.search(rf"\b{re.escape(pat)}", joined):
+            return kw
+    return None
+
 
 def _to_lc_message(msg):
     if isinstance(msg, BaseMessage):
@@ -117,6 +169,7 @@ class QuerySpec(BaseModel):
     movie_title: Optional[str] = None         # belirli bir film hakkında soru (oyuncular, yönetmen...)
     director: Optional[str] = None
     actor: Optional[str] = None
+    keyword: Optional[str] = None             # spesifik konu/tema/varlık varsa İngilizce TMDB keyword ("vampire" vb.)
     min_rating: Optional[float] = None
     max_rating: Optional[float] = None
     year_from: Optional[int] = None
@@ -125,6 +178,14 @@ class QuerySpec(BaseModel):
     must_have: List[str] = Field(default_factory=list)   # kullanıcının sert kriterleri (seçimde kontrol edilir)
     obscure: bool = False                     # kült / az bilinen / düşük bütçe / düşük puanlı istiyor
     media_type: str = "movie"                 # movie | tv | both
+
+    if not hasattr(BaseModel, "model_validate"):
+        @classmethod
+        def model_validate(cls, obj):
+            return cls.parse_obj(obj)
+
+        def model_dump(self):
+            return self.dict()
 
 
 EXTRACT_SYSTEM = """Sen bir film botunun sorgu analiz bileşenisin. Kullanıcı mesajından SADECE aşağıdaki JSON'u üret.
@@ -143,6 +204,7 @@ Alanlar (yoksa null ya da []):
 - reference_movie: "X'e benzer" denen film VEYA dizinin ORİJİNAL (İngilizce) adı. Yalnızca kullanıcı bir film verip benzerini istiyorsa.
 - movie_title: intent=movie_info ise filmin/dizinin orijinal adı.
 - director / actor: adı geçiyorsa.
+- keyword: kullanıcının istediği spesifik bir konu, yaratık, alt-tema veya mekan varsa tekil İNGİLİZCE TMDB anahtar kelimesi (örn. "vampire", "zombie", "werewolf", "witch", "ghost", "time travel", "serial killer", "cyberpunk", "heist", "alien", "space", "artificial intelligence", "survival", "post-apocalyptic", "amnesia", "lighthouse", "prison", "detective"). Sadece genel tür ("komedi öner", "aksiyon filmi") istendiyse null.
 - min_rating / max_rating: YALNIZCA kullanıcı sayısal puan sınırı verdiyse (0-10). "5'in altında" -> max_rating=5. "8 üzeri" -> min_rating=8. Varsayılan değer UYDURMA.
 - year_from / year_to: dönem belirtildiyse ("1920'ler" -> 1920 ve 1929, "2000'ler" -> 2000 ve 2009).
 - semantic_query_en: filmin konusunu/atmosferini tarif eden 1-2 cümlelik İNGİLİZCE açıklama. Sayısal kısıtları ve oyuncu/yönetmen adlarını KOYMA.
@@ -184,6 +246,10 @@ def _clean_spec(d: dict) -> dict:
             out[k] = [x.strip() for x in v.split(",") if x.strip()]
     out["include_genres"] = _canon_genres(out["include_genres"])
     out["exclude_genres"] = _canon_genres(out["exclude_genres"])
+    if isinstance(out.get("keyword"), list):
+        out["keyword"] = ", ".join(str(x).strip() for x in out["keyword"] if str(x).strip()) or None
+    elif isinstance(out.get("keyword"), str):
+        out["keyword"] = out["keyword"].strip() or None
     if str(out.get("intent", "")).lower() not in ("general", "movie_info", "recommendation"):
         out["intent"] = "recommendation"
     out["intent"] = str(out["intent"]).lower()
@@ -199,6 +265,24 @@ def parse_spec(raw: str) -> QuerySpec:
     except (ValueError, ValidationError, TypeError):
         logger.warning("QuerySpec ayrıştırılamadı; varsayılan öneri niyetine düşüldü.")
         return QuerySpec()   # güvenlik ağı: düz semantik arama
+
+
+def _fallback_spec_from_prompt(prompt: str) -> QuerySpec:
+    """LLM çağrısı zaman aşımına uğrarsa veya hata verirse prompt'tan deterministik QuerySpec üretir."""
+    p_norm = norm(prompt or "")
+    mt = "tv" if any(w in p_norm for w in ("dizi", "dizisi", "dizileri", "sezon", "bolum")) else "movie"
+    kw = _infer_keyword_from_text(prompt)
+    inc = []
+    for k, g in _GENRE_CANON.items():
+        if re.search(rf"\b{re.escape(norm(k))}\b", p_norm) and g not in inc:
+            inc.append(g)
+    return QuerySpec(
+        intent="recommendation",
+        media_type=mt,
+        include_genres=inc,
+        keyword=kw,
+        semantic_query_en=kw or prompt,
+    )
 
 
 def _history_text(state: GraphState, n: int = 4) -> str:
@@ -217,8 +301,17 @@ async def analyze_intent_node(state: GraphState):
 
     hist = _history_text(state)
     user = (f"Önceki konuşma:\n{hist}\n\n" if hist else "") + f"Mesaj: {state['prompt']}"
-    resp = await aclient.ainvoke([SystemMessage(content=EXTRACT_SYSTEM), HumanMessage(content=user)])
-    spec = parse_spec(resp.content)
+    try:
+        resp = await aclient.ainvoke([SystemMessage(content=EXTRACT_SYSTEM), HumanMessage(content=user)])
+        spec = parse_spec(resp.content)
+        # Canlı LLM çalışırken spesifik konu kelimesi ("vampir" -> "vampire" vb.) boş bırakıldıysa tamamla
+        if isinstance(aclient, ChatOllama) and spec.intent == "recommendation" and not spec.keyword:
+            inferred_kw = _infer_keyword_from_text(state.get("prompt"), spec.semantic_query_en)
+            if inferred_kw:
+                spec.keyword = inferred_kw
+    except Exception:
+        logger.error("Niyet analizi LLM hatası; deterministik yedek spec kullanılıyor", exc_info=True)
+        spec = _fallback_spec_from_prompt(state.get("prompt", ""))
     return {"intent": spec.intent, "intent_data": spec.model_dump()}
 
 
@@ -361,6 +454,8 @@ def _build_movie_plan(spec: QuerySpec, prompt: str, user_id: Optional[int] = Non
         plan.append(("search_movies_in_graph", {"category": "Director", "search_value": spec.director, "min_votes": min_votes}))
     if spec.actor:
         plan.append(("search_movies_in_graph", {"category": "Actor", "search_value": spec.actor, "min_votes": min_votes}))
+    if spec.keyword:
+        plan.append(("search_movies_in_graph", {"category": "Keyword", "search_value": spec.keyword, "min_votes": min_votes}))
 
     # Kullanıcı tanımlıysa ve öneri niyetindeyse GraphRAG Collaborative Filtering ekle
     if user_id and spec.intent == "recommendation":
@@ -370,7 +465,7 @@ def _build_movie_plan(spec: QuerySpec, prompt: str, user_id: Optional[int] = Non
         plan.append(("get_collaborative_recommendations", {k: v for k, v in cf_args.items() if v not in (None, 0, 0.0) or k == "max_rating"}))
 
     has_filters = bool(spec.include_genres or spec.exclude_genres or spec.director or spec.actor
-                       or spec.min_rating is not None or spec.max_rating is not None
+                       or spec.keyword or spec.min_rating is not None or spec.max_rating is not None
                        or spec.year_from or spec.year_to)
     if has_filters:
         args = {"min_votes": min_votes, **rng}
@@ -382,6 +477,8 @@ def _build_movie_plan(spec: QuerySpec, prompt: str, user_id: Optional[int] = Non
             args["director_name"] = spec.director
         if spec.actor:
             args["actor_name"] = spec.actor
+        if spec.keyword:
+            args["keyword"] = spec.keyword
         plan.append(("search_movies_by_filters", {k: v for k, v in args.items() if v not in (None, 0, 0.0) or k == "max_rating"}))
 
     # Tema/atmosfer her zaman anlamsal aramayla da taranır (kişi/tür filtresi tek başına yetmez)
@@ -407,14 +504,18 @@ def _build_series_plan(spec: QuerySpec, prompt: str) -> List[tuple]:
         plan.append(("search_series_in_graph", {"category": "Director", "search_value": spec.director, "min_votes": min_votes}))
     if spec.actor:
         plan.append(("search_series_in_graph", {"category": "Actor", "search_value": spec.actor, "min_votes": min_votes}))
+    if spec.keyword:
+        plan.append(("search_series_in_graph", {"category": "Keyword", "search_value": spec.keyword, "min_votes": min_votes}))
 
-    if spec.include_genres or spec.exclude_genres or spec.min_rating is not None or spec.max_rating is not None \
-            or spec.year_from or spec.year_to:
+    if spec.include_genres or spec.exclude_genres or spec.keyword or spec.min_rating is not None \
+            or spec.max_rating is not None or spec.year_from or spec.year_to:
         args = {"min_votes": min_votes, **rng}
         if spec.include_genres:
             args["genre_name"] = ",".join(spec.include_genres)
         if excl:
             args["exclude_genres"] = excl
+        if spec.keyword:
+            args["keyword"] = spec.keyword
         plan.append(("search_series_by_filters", {k: v for k, v in args.items() if v not in (None, 0, 0.0) or k == "max_rating"}))
 
     if not (spec.director or spec.actor) or spec.semantic_query_en:
@@ -454,8 +555,13 @@ def merge_candidates(result_lists: List[List[dict]]) -> List[dict]:
                 continue
             key = f"{c.get('media_type') or 'movie'}:{mid}"      # film 1399 ile dizi 1399 aynı şey DEĞİL
             cur = by_id.setdefault(key, {**c, "_rrf": 0.0, "_sources": [], "_key": key})
-            cur["_rrf"] += 1.0 / (60 + rank)
+            # Keyword gevşetilerek (relaxed=['keyword']) dönen genel tür dolgularının RRF ağırlığını düşür
+            relaxed_list = c.get("relaxed") or []
+            w_rrf = 0.35 if "keyword" in relaxed_list else 1.0
+            cur["_rrf"] += w_rrf * (1.0 / (60 + rank))
             cur["_sources"].append(c.get("source", ""))
+            if not relaxed_list and cur.get("relaxed"):
+                cur.pop("relaxed", None)
             for k in ("Özet", "Türler", "Director", "Cast", "Poster", "TMDB Puanı"):
                 if not cur.get(k) and c.get(k):
                     cur[k] = c[k]
@@ -532,9 +638,9 @@ def score_candidates(cands: List[dict], spec: QuerySpec, persona: Optional[dict]
             s_min, s_max = min(raw), max(raw)
             s_rng = s_max - s_min if s_max > s_min else 1.0
             for c, s in result:
-                norm = (s - s_min) / s_rng
-                c["_score"] = c["_base"] + RERANKER_BOOST * norm
-                c["_reranker"] = round(norm, 4)
+                norm_s = (s - s_min) / s_rng
+                c["_score"] = c["_base"] + RERANKER_BOOST * norm_s
+                c["_reranker"] = round(norm_s, 4)
             logger.info("Reranker: %d aday skorlandı (sorgu: %s...)",
                         len(result), query[:60])
 
@@ -624,13 +730,19 @@ def mmr_rerank(
     return selected
 
 
-def _brief(cands: List[dict]) -> str:
+def _brief(cands: List[dict], keyword: Optional[str] = None) -> str:
     def line(c):
         score_str = f"Sistem Skoru: {c.get('_score', 0):.2f}"
         pfit = c.get("_persona_fit", 0.0)
         pfit_str = f" | Profil Uyumu: %{int(pfit*100)}" if pfit > 0 else ""
         kind = "DİZİ" if c.get("media_type") == "tv" else "FİLM"
-        return (f"[ID:{c['_key']}] [{kind}] {c.get('Film', '')} ({c.get('Yıl', '')}) "
+        srcs = c.get("_sources") or []
+        kw_tag = ""
+        if keyword and not c.get("relaxed") and any(
+            s in srcs for s in ("graph_keyword", "graph_series_keyword", "semantic", "semantic_series", "tmdb_filter")
+        ):
+            kw_tag = f" [Etiket: {keyword}]"
+        return (f"[ID:{c['_key']}] [{kind}]{kw_tag} {c.get('Film', '')} ({c.get('Yıl', '')}) "
                 f"[{score_str}{pfit_str}] "
                 f"puan {c.get('TMDB Puanı', '?')} ({c.get('vote_count', 0)} oy) | {c.get('Türler', '')} | "
                 f"{(c.get('Özet') or '')[:260]}")
@@ -653,7 +765,7 @@ Kurallar:
 {mix_rule}
 - Kullanıcının sert kriterlerinden birini açıkça ihlal eden filmi SEÇME. Emin değilsen seçme.
   (örn. "uzaylılar görünmesin" denmişse uzaylıların göründüğü bir film; "banka soygunu" denmişse soygun olmayan film.)
-- Gerekçe (reason) SADECE adayın satırındaki bilgiye (tür, yıl, puan, özet) dayansın. Satırda olmayan
+- Gerekçe (reason) SADECE adayın satırındaki bilgiye (tür, yıl, puan, etiket, özet) dayansın. Satırda olmayan
   bilgiyi (besteci, renk paleti, sahne detayı) iddia etme.
 - Hiçbir aday kriterleri tam karşılamıyorsa no_exact_match=true yap ve yalnızca gerçekten yakın 1-3 filmi ver.
   Hiçbiri yakın değilse ranked'i boş bırak. Sayıyı doldurmak için alakasız film ekleme.
@@ -761,15 +873,15 @@ async def recommendation_node(state: GraphState):
     if top:
         if sid:
             chat_statuses[sid] = "✍️ En iyi sonuçlar seçiliyor..."
-        
+
         # JSON yapısının korunabilmesi için sınır kaldırıldı
         persona = state.get("persona") or "{}"
-        
+
         must = "; ".join(spec.must_have) or "-"
         human = (f"İstek: {state['prompt']}\nSert kriterler: {must}\n"
                  f"Ruh hali: {spec.mood or 'belirtilmedi'}\n"
                  f"Kullanıcı profili (JSON): {persona}\n\n"
-                 f"Adaylar:\n{_brief(top)}")
+                 f"Adaylar:\n{_brief(top, keyword=spec.keyword)}")
         try:
             resp = await aclient.ainvoke([SystemMessage(content=_select_system(spec, limit)),
                                           HumanMessage(content=human)])
@@ -868,8 +980,12 @@ async def general_chat_node(state: GraphState):
     lc_messages = [_to_lc_message(m) for m in state.get("messages", [])]
     if not lc_messages:
         lc_messages = [HumanMessage(content=state.get("prompt", ""))]
-    response = await aclient.ainvoke(lc_messages)
-    return {"final_output": response.content}
+    try:
+        response = await aclient.ainvoke(lc_messages)
+        return {"final_output": response.content}
+    except Exception:
+        logger.error("Genel sohbet LLM hatası", exc_info=True)
+        return {"final_output": "Merhaba! Sana nasıl bir film veya dizi önermemi istersin?"}
 
 
 # --- Grafik kurulumu ---------------------------------------------------------
@@ -908,6 +1024,7 @@ async def get_tools(session):
         }
         for tool in mcp_tools.tools
     ]
+
 
 # Geriye dönük uyumluluk için alias
 get_ollama_tools = get_tools
@@ -956,15 +1073,12 @@ async def generate_user_profile(chat_history_text, favorites_text, current_profi
             HumanMessage(content=user_input)
         ])
         content = response.content.strip()
-        # Markdown kod bloklarını temizle
         clean_content = re.sub(r'```json\s?|```', '', content).strip()
-        
-        # Geçerli bir JSON olup olmadığını test et
+
         profile = sanitize_profile(json.loads(clean_content))
         return json.dumps(profile, ensure_ascii=False)
     except Exception as e:
         logger.error("JSON Profil oluşturma hatası", exc_info=True)
-        # LLM hata yaparsa profili sıfırlamak yerine eski profili koru
         return current_profile_json if current_profile_json.strip() else "{}"
 
 
@@ -1007,8 +1121,9 @@ async def generate_user_suggestions(chat_history_text, favorites_text):
                 return suggestions[:3]
     except Exception as e:
         logger.error("Öneri oluşturma hatası", exc_info=True)
-    
+
     return ["Bilim kurgu filmi öner", "Nolan filmi öner", "Tim Burton filmi öner"]
+
 
 # ============================================================================
 # 3) ARKA PLAN ÖNERİSİ: adaylar araçlardan gelir, LLM sadece seçer + yazar
@@ -1162,6 +1277,8 @@ async def build_push_recommendation(user_id: int, persona: str, favs: List[dict]
               else "persona_genre" if "tmdb_filter" in srcs else "collaborative")
     return {"movie_id": str(chosen["movie_id"]), "title": chosen.get("Film"),
             "message": message, "reason": reason, "source": source}
+
+
 async def _cli_main():
     """Terminal testi: MCP havuzunu kurar, kullanıcı profili destekli ve şeffaf sohbet döngüsünü çalıştırır."""
     import sys

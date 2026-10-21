@@ -32,16 +32,22 @@ class MCPSessionPool:
         self._sessions: list[ClientSession] = []
         self._available: "asyncio.Queue[ClientSession]" = asyncio.Queue()
         self.tools: list[dict] = []
+        self._server_params: Optional[StdioServerParameters] = None
+
+    async def _create_session(self) -> ClientSession:
+        read, write = await self._exit_stack.enter_async_context(stdio_client(self._server_params))
+        session = await self._exit_stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        return session
 
     async def start(self, server_params: StdioServerParameters, tool_loader):
         """
         server_params: alt süreç olarak başlatılacak MCP server komutu.
         tool_loader  : async def(session) -> list[dict] (client.py::get_ollama_tools).
         """
+        self._server_params = server_params
         for _ in range(self.pool_size):
-            read, write = await self._exit_stack.enter_async_context(stdio_client(server_params))
-            session = await self._exit_stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
+            session = await self._create_session()
             self._sessions.append(session)
             self._available.put_nowait(session)
 
@@ -52,6 +58,21 @@ class MCPSessionPool:
         session = await self._available.get()
         try:
             return await session.call_tool(name, args)
+        except Exception:
+            # Render üzerinde alt süreç (stdio) koptuysa veya çöktüyse yeni session açıp bir kez daha dene
+            if self._server_params is not None:
+                try:
+                    new_session = await self._create_session()
+                    try:
+                        idx = self._sessions.index(session)
+                        self._sessions[idx] = new_session
+                    except ValueError:
+                        self._sessions.append(new_session)
+                    session = new_session
+                    return await session.call_tool(name, args)
+                except Exception:
+                    raise
+            raise
         finally:
             self._available.put_nowait(session)
 

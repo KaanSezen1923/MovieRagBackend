@@ -23,7 +23,7 @@ import httpx
 from shared import ctx, chat_statuses, MCPSessionPool
 from client import (
     get_ollama_tools, generate_user_profile, generate_user_suggestions,
-    build_push_recommendation, decay_profile, app as graph_app,
+    build_push_recommendation, build_push_recommendations_batch, decay_profile, app as graph_app,
 )
 from auth import (
     CurrentUser, create_access_token, get_current_user,
@@ -67,7 +67,7 @@ DB_POOL_MIN_SIZE = int(os.getenv("DB_POOL_MIN_SIZE", "2"))
 DB_POOL_MAX_SIZE = int(os.getenv("DB_POOL_MAX_SIZE", "10"))
 MCP_POOL_SIZE = int(os.getenv("MCP_POOL_SIZE", "3"))
 
-# --- YENİ: KULLANICI BAZLI KİLİT SÖZLÜĞÜ (LOCKS) ---
+# --- KULLANICI BAZLI KİLİT SÖZLÜĞÜ (LOCKS) ---
 user_workflow_locks = {}
 
 
@@ -182,7 +182,8 @@ async def lifespan(app: FastAPI):
         ctx.tools = mcp_pool.tools
         logger.info(f"{len(ctx.tools)} adet tool, {MCP_POOL_SIZE} paralel MCP session ile yüklendi.")
 
-        scheduler.add_job(send_random_notifications, 'interval', minutes=30)
+        scheduler.add_job(send_random_notifications, 'interval', minutes=15)
+        scheduler.add_job(periodic_recommendation_generator, 'interval', minutes=20)
         scheduler.start()
         logger.info("Zamanlayıcı (Scheduler) başlatıldı.")
 
@@ -203,8 +204,8 @@ app = FastAPI(title="Movie Explorer AI API", lifespan=lifespan)
 
 origins = [
     "https://cinewave-react-website.vercel.app",
-    "http://localhost:3000", # Yerel geliştirmeleriniz için
-    "http://localhost:5173", # Vite kullanıyorsanız
+    "http://localhost:3000",
+    "http://localhost:5173",
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -215,7 +216,6 @@ app.add_middleware(
 )
 
 # --- REACT FİLM SİTESİ İÇİN KATALOG ENDPOINT'LERİ ---
-# /catalog/... (home, browse, search, detay) burada dahil ediliyor.
 app.include_router(catalog_router)
 
 
@@ -489,13 +489,16 @@ async def chat(
     async with ctx.db_pool.acquire() as conn:
         await conn.execute("INSERT INTO chat_history (user_id, role, content, session_id) VALUES ($1, $2, $3, $4)", current_user.user_id, "user", request.prompt, request.session_id)
         await conn.execute("INSERT INTO chat_history (user_id, role, content, session_id) VALUES ($1, $2, $3, $4)", current_user.user_id, "assistant", answer, request.session_id)
-        msg_count = await conn.fetchval("SELECT COUNT(*) FROM chat_history WHERE user_id = $1", current_user.user_id)
+        user_msg_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM chat_history WHERE user_id = $1 AND role = 'user'",
+            current_user.user_id
+        )
 
     await _log_chat_impressions(current_user.user_id, request.session_id, answer)
 
-    # Tetikleyici, her 5 mesajda çalışır. Ancak artık görev içinde Kilit mekanizması var.
-    if msg_count > 0 and msg_count % 5 == 0:
-        background_tasks.add_task(profile_and_recommendation_workflow, current_user.user_id)
+    # İlk kullanıcı mesajında ve sonrasında her 2 kullanıcı mesajında bir öneri üret!
+    if user_msg_count == 1 or user_msg_count % 2 == 0:
+        background_tasks.add_task(profile_and_recommendation_workflow, current_user.user_id, 2)
 
     return {"answer": answer, "tool_calls": tool_calls, "tool_results": tool_results}
 
@@ -535,7 +538,11 @@ async def _log_chat_impressions(user_id: int, session_id: str, answer: str) -> N
 
 
 @app.post("/feedback")
-async def submit_feedback(req: FeedbackRequest, current_user: CurrentUser = Depends(get_current_user)):
+async def submit_feedback(
+    req: FeedbackRequest,
+    background_tasks: BackgroundTasks,
+    current_user: CurrentUser = Depends(get_current_user)
+):
     value = _FEEDBACK_VALUE[req.feedback]
     try:
         async with ctx.db_pool.acquire() as conn:
@@ -549,6 +556,9 @@ async def submit_feedback(req: FeedbackRequest, current_user: CurrentUser = Depe
                        title       = COALESCE(recommendation_feedback.title, EXCLUDED.title)""",
                 current_user.user_id, req.movie_id, req.title, req.source, value, req.session_id,
             )
+        # Kullanıcı bir filmi beğendiğinde (like) arka planda hemen yeni öneriler üret
+        if req.feedback == "like":
+            background_tasks.add_task(profile_and_recommendation_workflow, current_user.user_id, 2)
         return {"status": "success", "feedback": req.feedback}
     except Exception:
         logger.error("Feedback kaydı hatası", exc_info=True)
@@ -779,13 +789,19 @@ async def get_user_favorites(user_id: int, limit: int | None = None, offset: int
 
 
 @app.post("/favorites")
-async def add_favorite(fav: FavoriteRequest, current_user: CurrentUser = Depends(get_current_user)):
+async def add_favorite(
+    fav: FavoriteRequest,
+    background_tasks: BackgroundTasks,
+    current_user: CurrentUser = Depends(get_current_user)
+):
     async with ctx.db_pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO favorites (user_id, movie_id, title, genres, director, cast_members, poster_url, imdb_rating, trailer_url)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (user_id, movie_id) DO NOTHING""",
             current_user.user_id, fav.movie_id, fav.title, fav.genres, fav.director, fav.cast_members, fav.poster_url, fav.imdb_rating, fav.trailer_url
         )
+    # Yeni favori eklendiğinde arka planda hemen yeni öneriler üret
+    background_tasks.add_task(profile_and_recommendation_workflow, current_user.user_id, 2)
     return {"status": "success"}
 
 
@@ -818,10 +834,90 @@ async def update_push_token(req: TokenRequest, current_user: CurrentUser = Depen
 
 
 @app.get("/recommendations")
-async def get_user_recommendations(current_user: CurrentUser = Depends(get_current_user)):
+async def get_user_recommendations(
+    background_tasks: BackgroundTasks,
+    current_user: CurrentUser = Depends(get_current_user)
+):
     async with ctx.db_pool.acquire() as conn:
-        rows = await conn.fetch("SELECT id, movie_id, title, message, created_at, is_read FROM recommendations WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50", current_user.user_id)
-    return [{"id": r["id"], "movie_id": r["movie_id"], "title": r["title"], "body": r["message"], "date": r["created_at"], "is_read": r["is_read"]} for r in rows]
+        rows = await conn.fetch(
+            """SELECT id, movie_id, title, message, reason, source, created_at, is_read
+               FROM recommendations
+               WHERE user_id = $1
+               ORDER BY created_at DESC LIMIT 50""",
+            current_user.user_id
+        )
+
+    if not rows:
+        # Hiç önerisi yoksa bekletmeden senkron olarak hemen 3 öneri üret
+        await generate_and_save_recommendation_task(current_user.user_id, count=3)
+        async with ctx.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, movie_id, title, message, reason, source, created_at, is_read
+                   FROM recommendations
+                   WHERE user_id = $1
+                   ORDER BY created_at DESC LIMIT 50""",
+                current_user.user_id
+            )
+    else:
+        # Mevcut öneriler varsa ama son öneriden bu yana 20 dakikadan fazla geçtiyse arka planda yeni öneri üret
+        async with ctx.db_pool.acquire() as conn:
+            mins_since_last = await conn.fetchval(
+                "SELECT EXTRACT(EPOCH FROM (now() - MAX(created_at))) / 60.0 FROM recommendations WHERE user_id = $1",
+                current_user.user_id
+            )
+        if mins_since_last is not None and mins_since_last >= 20:
+            background_tasks.add_task(profile_and_recommendation_workflow, current_user.user_id, 2)
+
+    return [
+        {
+            "id": r["id"],
+            "movie_id": r["movie_id"],
+            "title": r["title"],
+            "body": r["message"],
+            "reason": r["reason"],
+            "source": r["source"],
+            "date": r["created_at"],
+            "is_read": r["is_read"],
+        }
+        for r in rows
+    ]
+
+
+@app.post("/recommendations/generate")
+async def trigger_recommendations_now(
+    count: int = Query(default=3, ge=1, le=5),
+    current_user: CurrentUser = Depends(get_current_user)
+):
+    """React web sitesinden kullanıcı 'Yeni Öneri Üret' dediğinde anında çalışır ve güncel listeyi döner."""
+    lock = get_user_lock(current_user.user_id)
+    async with lock:
+        await profile_update_task(current_user.user_id)
+        created = await generate_and_save_recommendation_task(current_user.user_id, count=count)
+
+    async with ctx.db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, movie_id, title, message, reason, source, created_at, is_read
+               FROM recommendations
+               WHERE user_id = $1
+               ORDER BY created_at DESC LIMIT 50""",
+            current_user.user_id
+        )
+    return {
+        "created_count": len(created),
+        "recommendations": [
+            {
+                "id": r["id"],
+                "movie_id": r["movie_id"],
+                "title": r["title"],
+                "body": r["message"],
+                "reason": r["reason"],
+                "source": r["source"],
+                "date": r["created_at"],
+                "is_read": r["is_read"],
+            }
+            for r in rows
+        ],
+    }
 
 
 @app.patch("/recommendations/read")
@@ -849,8 +945,7 @@ async def profile_update_task(user_id: int):
         history_list = await get_recent_chats(user_id, limit=10)
         history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_list])
 
-        # 4. YALNIZCA son güncellemeden sonraki favori ve geri bildirimler (aksi halde eski favoriler
-        #    her seferinde yeniden güçlenir ve decay etkisiz kalır)
+        # 4. YALNIZCA son güncellemeden sonraki favori ve geri bildirimler
         async with ctx.db_pool.acquire() as conn:
             new_favs = await conn.fetch(
                 """SELECT title, genres FROM favorites
@@ -869,7 +964,7 @@ async def profile_update_task(user_id: int):
 
         combined_interactions = f"SOHBETLER:\n{history_text}\n\nGERİ BİLDİRİMLER (LIKE/DISLIKE):\n{feedback_text}"
 
-        # 5. Yeni profili üret (LLM yalnızca yeni sinyalleri ekler; çıktı şemaya zorlanır)
+        # 5. Yeni profili üret
         new_profile_json = await generate_user_profile(combined_interactions, favorites_text, aged_profile)
 
         # 6. Veritabanına kaydet
@@ -917,52 +1012,58 @@ async def get_movie_card_by_id(movie_id):
         return None
 
 
-async def generate_and_save_recommendation_task(user_id: int):
+async def generate_and_save_recommendation_task(user_id: int, count: int = 3) -> list:
     try:
-        persona = await get_user_persona(user_id)
-        if not persona:
-            logger.info(f"Öneri atlandı (user={user_id}): persona yok")
-            return
-
+        persona = await get_user_persona(user_id) or "{}"
         favs = (await get_user_favorites(user_id)).get("favorites", [])
         async with ctx.db_pool.acquire() as conn:
             rows = await conn.fetch("SELECT movie_id, title FROM recommendations WHERE user_id = $1", user_id)
-            # sohbette/push'ta gösterilmiş HER film (beğenilen, beğenilmeyen, nötr) tekrar önerilmesin
             shown = await conn.fetch(
-                "SELECT movie_id, title FROM recommendation_feedback WHERE user_id = $1", user_id)
+                "SELECT movie_id, title FROM recommendation_feedback WHERE user_id = $1 AND feedback = -1", user_id
+            )
             liked_rows = await conn.fetch(
                 """SELECT movie_id, title FROM recommendation_feedback
-                   WHERE user_id = $1 AND feedback = 1 ORDER BY feedback_at DESC LIMIT 10""", user_id)
+                   WHERE user_id = $1 AND feedback = 1 ORDER BY feedback_at DESC LIMIT 15""", user_id
+            )
 
-        # Favoriler + geçmiş öneriler + gösterilenler (dislike dahil): id VE başlık ile dışla
-        exclude_ids = ({str(r["movie_id"]) for r in rows if r["movie_id"]} | {str(f["movie_id"]) for f in favs}
+        # Daha önce önerilenler + favoriler + dislike edilenler dışlanır
+        exclude_ids = ({str(r["movie_id"]) for r in rows if r["movie_id"]}
+                       | {str(f["movie_id"]) for f in favs if f.get("movie_id")}
                        | {str(s["movie_id"]) for s in shown if s["movie_id"]})
         exclude_titles = ({r["title"].lower().strip() for r in rows if r["title"]}
-                          | {f["Film"].lower().strip() for f in favs if f["Film"]}
+                          | {f["Film"].lower().strip() for f in favs if f.get("Film")}
                           | {s["title"].lower().strip() for s in shown if s["title"]})
         liked = [{"movie_id": str(r["movie_id"]), "Film": r["title"]} for r in liked_rows if r["title"]]
 
-        rec = await build_push_recommendation(user_id, persona, favs, exclude_ids, exclude_titles, liked=liked)
-        if not rec:
-            return
+        recs = await build_push_recommendations_batch(
+            user_id, persona, favs, exclude_ids, exclude_titles, liked=liked, count=count
+        )
+        if not recs:
+            return []
 
+        inserted = []
         async with ctx.db_pool.acquire() as conn:
-            await conn.execute(
-                """INSERT INTO recommendations (user_id, movie_id, title, message, reason, source)
-                   SELECT $1::bigint, $2::text, $3::text, $4::text, $5::text, $6::text
-                   WHERE NOT EXISTS (SELECT 1 FROM recommendations WHERE user_id = $1::bigint AND movie_id = $2::text)""",
-                user_id, rec["movie_id"], rec["title"], rec["message"], rec["reason"], rec.get("source"),
-            )
-        logger.info(f"Öneri kaydedildi (user={user_id}): {rec['title']!r} ({rec['reason']})")
+            for rec in recs:
+                row_id = await conn.fetchval(
+                    """INSERT INTO recommendations (user_id, movie_id, title, message, reason, source)
+                       SELECT $1::bigint, $2::text, $3::text, $4::text, $5::text, $6::text
+                       WHERE NOT EXISTS (SELECT 1 FROM recommendations WHERE user_id = $1::bigint AND movie_id = $2::text)
+                       RETURNING id""",
+                    user_id, rec["movie_id"], rec["title"], rec["message"], rec["reason"], rec.get("source"),
+                )
+                if row_id:
+                    inserted.append(rec)
+                    logger.info(f"Öneri kaydedildi (user={user_id}): {rec['title']!r} ({rec['reason']})")
+        return inserted
     except Exception:
         logger.error(f"Öneri üretme hatası (user={user_id})", exc_info=True)
+        return []
 
 
 # --- KİLİT MEKANİZMASI ENTEGRE EDİLMİŞ İŞ AKIŞI ---
-async def profile_and_recommendation_workflow(user_id: int):
+async def profile_and_recommendation_workflow(user_id: int, count: int = 2):
     lock = get_user_lock(user_id)
 
-    # Eğer kilitliyse (yani bu kullanıcının önceki profilleme görevi hala sürüyorsa) çıkış yap.
     if lock.locked():
         logger.info(f"Kullanıcı (id={user_id}) için profilleme görevi zaten çalışıyor, Kilit atlandı.")
         return
@@ -970,9 +1071,25 @@ async def profile_and_recommendation_workflow(user_id: int):
     async with lock:
         try:
             await profile_update_task(user_id)
-            await generate_and_save_recommendation_task(user_id)
+            await generate_and_save_recommendation_task(user_id, count=count)
         except Exception:
             logger.error(f"Workflow çalıştırılırken hata (user={user_id})", exc_info=True)
+
+
+async def periodic_recommendation_generator():
+    """Aktif kullanıcılar için her 20 dakikada bir otomatik yeni öneri üretir."""
+    try:
+        async with ctx.db_pool.acquire() as conn:
+            users = await conn.fetch(
+                """SELECT u.id FROM users u
+                   WHERE EXISTS (SELECT 1 FROM favorites f WHERE f.user_id = u.id)
+                      OR EXISTS (SELECT 1 FROM chat_history c WHERE c.user_id = u.id)
+                   ORDER BY u.id DESC LIMIT 20"""
+            )
+        for u in users:
+            await profile_and_recommendation_workflow(u["id"], count=1)
+    except Exception:
+        logger.error("Periyodik öneri üretme hatası", exc_info=True)
 
 
 async def send_random_notifications():

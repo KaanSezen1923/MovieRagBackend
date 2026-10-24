@@ -1,28 +1,5 @@
 """
 LangGraph istemcisi: niyet analizi -> (öneri hattı | film bilgisi | sohbet).
-
-MİMARİ DEĞİŞİKLİK — "LLM araç çağırır" yerine "kod planlar, LLM sadece anlar ve seçer":
-
-  ESKİ:  intent LLM -> reasoning LLM (aynı iş, ikinci kez) -> ajan döngüsü (en çok 3 LLM turu,
-         araçlar SIRAYLA) -> her adayı TMDB'de zenginleştirme -> writer LLM
-         => 4-6 seri LLM çağrısı + ~15 TMDB isteği (ort. 8.9 sn)
-  YENİ:  1 LLM (yapısal çıkarım) -> kod: paralel retrieval -> kod: sert filtre + skor
-         -> 1 LLM (sıralı seçim + gerekçe) -> sadece seçilen 5 film için zenginleştirme
-
-Düzeltilen hatalar:
-  * GraphState'te intent_data yoktu; LangGraph bilinmeyen anahtarı sessizce düşürdüğü için
-    recommendation_node çıkarımı ikinci kez yapmak zorunda kalıyordu. Artık shared.GraphState kullanılır.
-  * Kartlar LLM'in sıralamasıyla değil, araçların dönüş sırasıyla dizilmişti
-    (Memento 3., Godzilla Resurgence son sıradaydı). Artık LLM'in sırası korunur.
-  * 'avoid', 'min_rating' sadece prompt metnindeydi; LLM'in uymasına bırakılmıştı.
-    Artık exclude_genres / min_rating / max_rating / yıl KODDA uygulanır (Q12, Q18, Q36).
-  * mood şemada 'null olabilir' denmediği için LLM her sorguya duygu uyduruyordu
-    ("Kasvetin içinde kaybolmuş hissettiğin..."). Artık yalnızca açıkça söylenmişse doldurulur.
-  * Metin ve liste aynı LLM çağrısından gelir; 'uygun olmayanları eklemedim' deyip 5 film
-    döndürme çelişkisi (Q45) ortadan kalkar. Hiç uygun aday yoksa boş liste + dürüst mesaj.
-  * Konu/tema sorgularında (örn. "vampir dizileri öner") QuerySpec.keyword çıkarımı ve otomatik
-    keyword algılama eklendi; filtre ve graf araçlarına keyword aktarılır, keyword gevşetilmiş
-    (relaxed=["keyword"]) genel tür dolgularının RRF skoru düşürülür.
 """
 import asyncio
 import json
@@ -40,7 +17,7 @@ from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field, ValidationError
 from uvicorn import logging
 from logger import logger
-from shared import GraphState, chat_statuses, ctx   # TEK GraphState tanımı (intent_data dahil)
+from shared import GraphState, chat_statuses, ctx
 from movie_common import norm
 
 try:
@@ -48,17 +25,12 @@ try:
 except ImportError:
     _rerank = None
 
-load_dotenv(override=True)   # .env, sistem ortam değişkenini ezsin
+load_dotenv(override=True)
 
 # --- Ollama bağlantısı -------------------------------------------------------
-# gemma4:31b-cloud, yerel Ollama üzerinden (ollama signin yapılmış) bulutta çalışır.
-
-
 MODEL_NAME = os.getenv("OLLAMA_MODEL", "gemma4:31b-cloud")
 OLLAMA_HOST = (os.getenv("OLLAMA_HOST") or "https://ollama.com").rstrip("/")
 _ollama_key = os.getenv("OLLAMA_API_KEY")
-# trust_env=False: sistemdeki HTTP(S)_PROXY / ALL_PROXY değişkenleri localhost isteğini
-# bozmasın ("All connection attempts failed" hatasının sık nedeni).
 _client_kwargs = {"trust_env": False}
 if _ollama_key:
     _client_kwargs["headers"] = {"Authorization": f"Bearer {_ollama_key}"}
@@ -66,18 +38,18 @@ aclient = ChatOllama(model=MODEL_NAME, temperature=0.7, base_url=OLLAMA_HOST, cl
 logger.info(f"Ollama -> {OLLAMA_HOST} | model={MODEL_NAME}")
 
 # ---- ayarlar --------------------------------------------------------------
-MAX_MOVIES = 5              # sonuç sayısı
-MAX_MOVIES_PEOPLE = 8       # yönetmen/oyuncu filmografisi sorgularında
-CANDIDATES_TO_LLM = 15      # seçim aşamasına giden aday sayısı
-MIN_VOTES = 100             # normal sorgularda oy eşiği
-MIN_VOTES_OBSCURE = 20      # "kült / az bilinen / bağımsız" sorgularında
-SERIES_VOTE_FACTOR = 0.3    # dizilerin oy sayıları düşüktür: eşik = MIN_VOTES * bu çarpan
-SERIES_TV_SHARE = 0.4       # media_type='both' iken aday havuzunda dizi payı
-TOOL_TIMEOUT = 25           # sn
-RERANKER_BOOST = float(os.getenv("RERANKER_BOOST", "0.10"))   # reranker skor ağırlığı
-RERANKER_TOP_N = int(os.getenv("RERANKER_TOP_N", "50"))        # reranker'a giden max aday
+MAX_MOVIES = 5
+MAX_MOVIES_PEOPLE = 8
+CANDIDATES_TO_LLM = 15
+MIN_VOTES = 100
+MIN_VOTES_OBSCURE = 20
+SERIES_VOTE_FACTOR = 0.3
+SERIES_TV_SHARE = 0.4
+TOOL_TIMEOUT = 25
+RERANKER_BOOST = float(os.getenv("RERANKER_BOOST", "0.10"))
+RERANKER_TOP_N = int(os.getenv("RERANKER_TOP_N", "50"))
 MMR_ENABLED = os.getenv("MMR_ENABLED", "true").lower() in ("true", "1", "yes")
-MMR_LAMBDA = float(os.getenv("MMR_LAMBDA", "0.7"))             # alaka (1.0) vs çeşitlilik (0.0) dengesi
+MMR_LAMBDA = float(os.getenv("MMR_LAMBDA", "0.7"))
 
 TMDB_GENRES = ["Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary", "Drama", "Family",
                "Fantasy", "History", "Horror", "Music", "Mystery", "Romance", "Science Fiction",
@@ -161,23 +133,23 @@ def _to_lc_message(msg):
 # 1) YAPISAL SORGU ÇIKARIMI (tek LLM çağrısı)
 # ============================================================================
 class QuerySpec(BaseModel):
-    intent: str = "recommendation"            # general | movie_info | recommendation
-    mood: Optional[str] = None                # SADECE kullanıcı duygusunu açıkça söylediyse
+    intent: str = "recommendation"
+    mood: Optional[str] = None
     include_genres: List[str] = Field(default_factory=list)
     exclude_genres: List[str] = Field(default_factory=list)
-    reference_movie: Optional[str] = None     # "X'e benzer" denen film (orijinal adı)
-    movie_title: Optional[str] = None         # belirli bir film hakkında soru (oyuncular, yönetmen...)
+    reference_movie: Optional[str] = None
+    movie_title: Optional[str] = None
     director: Optional[str] = None
     actor: Optional[str] = None
-    keyword: Optional[str] = None             # spesifik konu/tema/varlık varsa İngilizce TMDB keyword ("vampire" vb.)
+    keyword: Optional[str] = None
     min_rating: Optional[float] = None
     max_rating: Optional[float] = None
     year_from: Optional[int] = None
     year_to: Optional[int] = None
-    semantic_query_en: Optional[str] = None   # tema/atmosfer, İngilizce, sayısal kısıtsız
-    must_have: List[str] = Field(default_factory=list)   # kullanıcının sert kriterleri (seçimde kontrol edilir)
-    obscure: bool = False                     # kült / az bilinen / düşük bütçe / düşük puanlı istiyor
-    media_type: str = "movie"                 # movie | tv | both
+    semantic_query_en: Optional[str] = None
+    must_have: List[str] = Field(default_factory=list)
+    obscure: bool = False
+    media_type: str = "movie"
 
     if not hasattr(BaseModel, "model_validate"):
         @classmethod
@@ -264,7 +236,7 @@ def parse_spec(raw: str) -> QuerySpec:
         return QuerySpec.model_validate(_clean_spec(_parse_json(raw)))
     except (ValueError, ValidationError, TypeError):
         logger.warning("QuerySpec ayrıştırılamadı; varsayılan öneri niyetine düşüldü.")
-        return QuerySpec()   # güvenlik ağı: düz semantik arama
+        return QuerySpec()
 
 
 def _fallback_spec_from_prompt(prompt: str) -> QuerySpec:
@@ -304,7 +276,6 @@ async def analyze_intent_node(state: GraphState):
     try:
         resp = await aclient.ainvoke([SystemMessage(content=EXTRACT_SYSTEM), HumanMessage(content=user)])
         spec = parse_spec(resp.content)
-        # Canlı LLM çalışırken spesifik konu kelimesi ("vampir" -> "vampire" vb.) boş bırakıldıysa tamamla
         if isinstance(aclient, ChatOllama) and spec.intent == "recommendation" and not spec.keyword:
             inferred_kw = _infer_keyword_from_text(state.get("prompt"), spec.semantic_query_en)
             if inferred_kw:
@@ -338,13 +309,12 @@ def bayes(avg, votes, m=500, c=6.5) -> float:
 
 
 # ---- kişiselleştirme yardımcıları -------------------------------------------
-PERSONA_WEIGHT = float(os.getenv("PERSONA_WEIGHT", "0.02"))   # skora persona katkısı (RRF/Bayes ölçeğinde)
-SEEN_PENALTY = float(os.getenv("SEEN_PENALTY", "0.02"))       # daha önce gösterilene hafif ceza
+PERSONA_WEIGHT = float(os.getenv("PERSONA_WEIGHT", "0.02"))
+SEEN_PENALTY = float(os.getenv("SEEN_PENALTY", "0.02"))
 PROFILE_HALF_LIFE_DAYS = float(os.getenv("PROFILE_HALF_LIFE_DAYS", "60"))
 
 
 def _persona_obj(raw) -> dict:
-    """Persona JSON metni (ya da dict) -> dict. Bozuksa boş dict."""
     if isinstance(raw, dict):
         return raw
     try:
@@ -355,7 +325,6 @@ def _persona_obj(raw) -> dict:
 
 
 def _weights(d, canon_genres: bool = False) -> dict:
-    """{ad: ağırlık} -> küçük harfli anahtarlı, yalnızca sayısal değerli sözlük."""
     out = {}
     if isinstance(d, dict):
         for k, v in d.items():
@@ -368,7 +337,6 @@ def _weights(d, canon_genres: bool = False) -> dict:
 
 
 def _avoid_genres(p: dict) -> set:
-    """Persona 'avoid' listesindeki TMDB türleri (küçük harf). Tür olmayan temalar LLM'e kalır."""
     av = p.get("avoid")
     out = set()
     for a in (av if isinstance(av, list) else []):
@@ -389,7 +357,6 @@ def _top_genres(p: dict, n: int = 2) -> List[str]:
 
 
 def _persona_fit(c: dict, p: dict) -> float:
-    """Adayın profile uyumu [0,1]: tür ağırlığı (%60) + yönetmen/oyuncu eşleşmesi (%40)."""
     if not isinstance(p, dict) or not p:
         return 0.0
     gw = _weights(p.get("genres"), canon_genres=True)
@@ -401,19 +368,17 @@ def _persona_fit(c: dict, p: dict) -> float:
 
 
 def decay_profile(profile, days: float, half_life: float = PROFILE_HALF_LIFE_DAYS, floor: float = 0.15) -> dict:
-    """Zamana bağlı yaşlandırma (KODDA). Yarı ömür: half_life gün; floor altı girdiler silinir."""
     p = _persona_obj(profile)
     if days and days > 0:
         f = 0.5 ** (days / half_life)
         for k in ("genres", "directors", "actors"):
             d = p.get(k) if isinstance(p.get(k), dict) else {}
             p[k] = {n: round(float(w) * f, 3) for n, w in d.items()
-                    if isinstance(w, (int, float)) and not isinstance(w, bool) and float(w) * f >= floor}
+                    if isinstance(w, (int, float)) and not isinstance(v := w, bool) and float(v) * f >= floor}
     return p
 
 
 def sanitize_profile(profile) -> dict:
-    """LLM'in ürettiği profili şemaya zorla: ağırlıklar [0,1], türler TMDB adlarına normalize."""
     p = _persona_obj(profile)
 
     def clamp(d, genres: bool = False) -> dict:
@@ -441,7 +406,6 @@ def sanitize_profile(profile) -> dict:
 
 
 def _build_movie_plan(spec: QuerySpec, prompt: str, user_id: Optional[int] = None) -> List[tuple]:
-    """FİLM araçları. Hangi araçlar hangi argümanlarla çalışacak? Deterministik; LLM karar vermez."""
     min_votes = MIN_VOTES_OBSCURE if spec.obscure else MIN_VOTES
     excl = ",".join(spec.exclude_genres)
     rng = {"min_rating": spec.min_rating or 0.0, "max_rating": spec.max_rating if spec.max_rating is not None else 10.0,
@@ -457,7 +421,6 @@ def _build_movie_plan(spec: QuerySpec, prompt: str, user_id: Optional[int] = Non
     if spec.keyword:
         plan.append(("search_movies_in_graph", {"category": "Keyword", "search_value": spec.keyword, "min_votes": min_votes}))
 
-    # Kullanıcı tanımlıysa ve öneri niyetindeyse GraphRAG Collaborative Filtering ekle
     if user_id and spec.intent == "recommendation":
         cf_args = {"user_id": user_id, "limit": 15, "min_votes": min_votes, **rng}
         if excl:
@@ -481,7 +444,6 @@ def _build_movie_plan(spec: QuerySpec, prompt: str, user_id: Optional[int] = Non
             args["keyword"] = spec.keyword
         plan.append(("search_movies_by_filters", {k: v for k, v in args.items() if v not in (None, 0, 0.0) or k == "max_rating"}))
 
-    # Tema/atmosfer her zaman anlamsal aramayla da taranır (kişi/tür filtresi tek başına yetmez)
     if not (spec.director or spec.actor) or spec.semantic_query_en:
         plan.append(("search_movies_semantically", {
             "semantic_query": spec.semantic_query_en or prompt,
@@ -490,8 +452,6 @@ def _build_movie_plan(spec: QuerySpec, prompt: str, user_id: Optional[int] = Non
 
 
 def _build_series_plan(spec: QuerySpec, prompt: str) -> List[tuple]:
-    """DİZİ araçları (film planının karşılığı). TMDB dizilerde oyuncu/yaratıcı filtresi olmadığı için
-    kişi sorguları Neo4j grafına gider."""
     base = MIN_VOTES_OBSCURE if spec.obscure else MIN_VOTES
     min_votes = max(5, int(base * SERIES_VOTE_FACTOR))
     excl = ",".join(spec.exclude_genres)
@@ -500,7 +460,7 @@ def _build_series_plan(spec: QuerySpec, prompt: str) -> List[tuple]:
     plan = []
     if spec.reference_movie:
         plan.append(("get_similar_series", {"series_title": spec.reference_movie}))
-    if spec.director:      # dizide 'yönetmen' yerine yaratıcı
+    if spec.director:
         plan.append(("search_series_in_graph", {"category": "Director", "search_value": spec.director, "min_votes": min_votes}))
     if spec.actor:
         plan.append(("search_series_in_graph", {"category": "Actor", "search_value": spec.actor, "min_votes": min_votes}))
@@ -526,7 +486,6 @@ def _build_series_plan(spec: QuerySpec, prompt: str) -> List[tuple]:
 
 
 def build_plan(spec: QuerySpec, prompt: str, user_id: Optional[int] = None) -> List[tuple]:
-    """media_type'a göre film ve/veya dizi araçlarını birleştirir."""
     plan = []
     if spec.media_type in ("movie", "both"):
         plan += _build_movie_plan(spec, prompt, user_id)
@@ -536,7 +495,6 @@ def build_plan(spec: QuerySpec, prompt: str, user_id: Optional[int] = None) -> L
 
 
 def balance_media(ranked: List[dict], k: int, tv_share: float = SERIES_TV_SHARE) -> List[dict]:
-    """'both' sorgularında film/dizi dengesi: aday havuzunun en az ~%tv_share'i dizi olsun (varsa)."""
     tv = [c for c in ranked if c.get("media_type") == "tv"]
     mv = [c for c in ranked if c.get("media_type") != "tv"]
     n_tv = min(len(tv), round(k * tv_share))
@@ -546,16 +504,14 @@ def balance_media(ranked: List[dict], k: int, tv_share: float = SERIES_TV_SHARE)
 
 
 def merge_candidates(result_lists: List[List[dict]]) -> List[dict]:
-    """Kaynakları movie_id ile birleştir; her kaynaktaki sıradan Reciprocal Rank Fusion skoru üret."""
     by_id = {}
     for lst in result_lists:
         for rank, c in enumerate(lst):
             mid = str(c.get("movie_id") or "")
             if not mid:
                 continue
-            key = f"{c.get('media_type') or 'movie'}:{mid}"      # film 1399 ile dizi 1399 aynı şey DEĞİL
+            key = f"{c.get('media_type') or 'movie'}:{mid}"
             cur = by_id.setdefault(key, {**c, "_rrf": 0.0, "_sources": [], "_key": key})
-            # Keyword gevşetilerek (relaxed=['keyword']) dönen genel tür dolgularının RRF ağırlığını düşür
             relaxed_list = c.get("relaxed") or []
             w_rrf = 0.35 if "keyword" in relaxed_list else 1.0
             cur["_rrf"] += w_rrf * (1.0 / (60 + rank))
@@ -570,9 +526,6 @@ def merge_candidates(result_lists: List[List[dict]]) -> List[dict]:
 
 
 def hard_filter(cands: List[dict], spec: QuerySpec, blocked=frozenset(), avoid=frozenset()) -> List[dict]:
-    """Kullanıcının sert kısıtlarını KODLA uygula. (LLM'in uymasına güvenme.)
-    blocked: dislike edilen film id'leri. avoid: profildeki kaçınılan türler (küçük harf);
-    kullanıcı bu sorguda o türü AÇIKÇA istediyse (include_genres) engellenmez."""
     avoid = set(avoid) - {g.lower() for g in spec.include_genres}
     excl = {g.lower() for g in spec.exclude_genres} | avoid
     min_votes = MIN_VOTES_OBSCURE if spec.obscure else MIN_VOTES
@@ -598,7 +551,7 @@ def hard_filter(cands: List[dict], spec: QuerySpec, blocked=frozenset(), avoid=f
         mv = max(5, int(min_votes * SERIES_VOTE_FACTOR)) if c.get("media_type") == "tv" else min_votes
         if c.get("vote_count", 0) < mv:
             continue
-        if not (c.get("Özet") or "").strip():      # özetsiz kayıt seçim için işe yaramaz
+        if not (c.get("Özet") or "").strip():
             continue
         out.append(c)
     return out
@@ -606,17 +559,9 @@ def hard_filter(cands: List[dict], spec: QuerySpec, blocked=frozenset(), avoid=f
 
 def score_candidates(cands: List[dict], spec: QuerySpec, persona: Optional[dict] = None,
                      seen=frozenset()) -> List[dict]:
-    """
-    Aday filmleri skorlar: RRF + Bayes + tür uyumu + Reranker (varsa).
-
-    Reranker (bge-reranker-v2-m3) devredeyse ve spec.semantic_query_en doluysa,
-    adaylar Cross-Encoder ile yeniden skorlanır ve sonuç, statik formülle
-    harmanlanır. Model yüklenemezse veya sorgu yoksa eski formül kullanılır.
-    """
     m = 50 if spec.obscure else 500
     inc = {g.lower() for g in spec.include_genres}
 
-    # ── Faz 1: Statik temel skor (her zaman) ──
     for c in cands:
         wr = bayes(c.get("TMDB Puanı"), c.get("vote_count", 0),
                    m=(max(10, m // 5) if c.get("media_type") == "tv" else m))
@@ -628,7 +573,6 @@ def score_candidates(cands: List[dict], spec: QuerySpec, persona: Optional[dict]
                       - (SEEN_PENALTY if str(c.get("movie_id") or "") in seen else 0.0))
         c["_score"] = c["_base"]
 
-    # ── Faz 2: Cross-Encoder reranker (opsiyonel) ──
     query = spec.semantic_query_en
     if _rerank and query:
         pool = sorted(cands, key=lambda c: c["_base"], reverse=True)[:RERANKER_TOP_N]
@@ -648,16 +592,10 @@ def score_candidates(cands: List[dict], spec: QuerySpec, persona: Optional[dict]
 
 
 def candidate_similarity(c1: dict, c2: dict, spec: Optional[QuerySpec] = None) -> float:
-    """
-    İki aday film arasındaki benzerliği [0, 1] aralığında hesaplar.
-    Tür Jaccard'ı, Yönetmen çakışması ve Özet kelime örtüşmesini harmanlar.
-    """
-    # 1. Tür benzerliği (Jaccard)
     g1 = _card_genres(c1)
     g2 = _card_genres(c2)
     genre_sim = len(g1 & g2) / len(g1 | g2) if (g1 and g2) else 0.0
 
-    # 2. Yönetmen benzerliği (kullanıcı spesifik bir yönetmen aramamışsa)
     d1 = (c1.get("Director") or "").strip().lower()
     d2 = (c2.get("Director") or "").strip().lower()
     dir_sim = 0.0
@@ -665,7 +603,6 @@ def candidate_similarity(c1: dict, c2: dict, spec: Optional[QuerySpec] = None) -
         if d1 and d2 and d1 == d2:
             dir_sim = 1.0
 
-    # 3. Özet kelime kümesi benzerliği (Jaccard)
     words1 = set(re.findall(r"\w{4,}", (c1.get("Özet") or "").lower()))
     words2 = set(re.findall(r"\w{4,}", (c2.get("Özet") or "").lower()))
     text_sim = len(words1 & words2) / len(words1 | words2) if (words1 and words2) else 0.0
@@ -679,19 +616,11 @@ def mmr_rerank(
     lambda_param: float = MMR_LAMBDA,
     spec: Optional[QuerySpec] = None,
 ) -> List[dict]:
-    """
-    Maximal Marginal Relevance (MMR) algoritması.
-    Aday havuzundaki filmlerin alaka düzeyini (relevance) korurken,
-    seçilen filmler arasındaki benzerliği cezalandırarak çeşitliliği (diversity) artırır.
-
-    MMR = lambda * Rel(d) - (1 - lambda) * max_{s in S} Sim(d, s)
-    """
     if not cands or limit <= 0:
         return []
     if len(cands) <= limit or lambda_param >= 1.0:
         return cands[:limit]
 
-    # Alaka puanlarını [0, 1] aralığına normalize et
     raw_scores = [float(c.get("_score", 0.0)) for c in cands]
     s_min, s_max = min(raw_scores), max(raw_scores)
     s_rng = s_max - s_min if s_max > s_min else 1.0
@@ -700,12 +629,10 @@ def mmr_rerank(
     selected = []
     remaining = list(cands)
 
-    # 1. En yüksek skorlu ilk adayı doğrudan seç
     first = remaining.pop(0)
     first["_mmr"] = 1.0
     selected.append(first)
 
-    # 2. Geriye kalan adaylardan MMR formülüne göre seçim yap
     while len(selected) < limit and remaining:
         best_cand = None
         best_mmr = -float("inf")
@@ -780,24 +707,23 @@ Yalnızca şu JSON'u döndür:
 
 
 def parse_selection(raw: str, valid_ids: set, limit: int):
-    """-> (text, mood_response, no_exact, [(id, reason)]) ; ayrıştırma başarısızsa None."""
     try:
         w = _parse_json(raw)
     except Exception:
         return None
     ranked = w.get("ranked")
-    if isinstance(ranked, dict):                       # {id: reason} biçimine de tolerans
+    if isinstance(ranked, dict):
         ranked = [{"id": k, "reason": v} for k, v in ranked.items()]
     if not isinstance(ranked, list):
         return None
     picks, seen = [], set()
     for r in ranked:
         rid = str(r.get("id", "")).strip().replace("ID:", "") if isinstance(r, dict) else ""
-        if rid not in valid_ids and rid.isdigit():          # LLM "27205" yazdıysa: tek eşleşme varsa tamamla
+        if rid not in valid_ids and rid.isdigit():
             hit = [k for k in (f"movie:{rid}", f"tv:{rid}") if k in valid_ids]
             if len(hit) == 1:
                 rid = hit[0]
-        if rid in valid_ids and rid not in seen:       # uydurma / tekrar eden id'leri at
+        if rid in valid_ids and rid not in seen:
             seen.add(rid)
             picks.append((rid, str(r.get("reason", "")).strip()))
         if len(picks) == limit:
@@ -814,7 +740,7 @@ async def recommendation_node(state: GraphState):
     if sid:
         chat_statuses[sid] = "🧠 Öneri motoru hazırlanıyor..."
 
-    spec = QuerySpec.model_validate(_clean_spec(state.get("intent_data") or {}))   # tekrar LLM çağrısı YOK
+    spec = QuerySpec.model_validate(_clean_spec(state.get("intent_data") or {}))
     tool_calls_log, tool_results_log = [], []
     tool_errors = []
     _ERR_PREFIXES = ("Araç hatası", "Semantik arama hatası", "Graf arama hatası",
@@ -864,7 +790,7 @@ async def recommendation_node(state: GraphState):
     limit = MAX_MOVIES_PEOPLE if (spec.director or spec.actor) else MAX_MOVIES
     noun = {"movie": "film", "tv": "dizi"}.get(spec.media_type, "film ya da dizi")
     text = f"Aradığın kriterlere uygun {noun} bulunamadı. Farklı bir tür veya oyuncu denemek ister misin?"
-    if not top and tool_errors:       # "bulunamadı" değil, gerçek neden: servis hatası
+    if not top and tool_errors:
         text = "Şu anda arama servisine tam olarak ulaşamıyorum. Lütfen biraz sonra tekrar dene."
     mood_response, final_ids, reasons = "", [], {}
     lite_by_id = {c["_key"]: c for c in top}
@@ -874,7 +800,6 @@ async def recommendation_node(state: GraphState):
         if sid:
             chat_statuses[sid] = "✍️ En iyi sonuçlar seçiliyor..."
 
-        # JSON yapısının korunabilmesi için sınır kaldırıldı
         persona = state.get("persona") or "{}"
 
         must = "; ".join(spec.must_have) or "-"
@@ -890,15 +815,15 @@ async def recommendation_node(state: GraphState):
             logger.error("Seçim aşaması hatası", exc_info=True)
             parsed = None
 
-        if parsed is None:          # LLM çıktısı bozuk -> skor sırasıyla ilk 3 (dürüst etiketle)
+        if parsed is None:
             final_ids = [c["_key"] for c in top[:3]]
             text = "Kriterlerine en yakın bulabildiklerim bunlar:"
             reasons = {i: "Arama skoruna göre en yakın eşleşme." for i in final_ids}
         else:
             t, mood, _no_exact, picks = parsed
-            final_ids = [i for i, _ in picks]                 # LLM'in SIRASI korunur
+            final_ids = [i for i, _ in picks]
             reasons = {i: r for i, r in picks}
-            mood_response = mood if spec.mood else ""         # ruh hali söylenmediyse asla gösterme
+            mood_response = mood if spec.mood else ""
             if final_ids:
                 text = t or "İşte senin için seçtiklerim:"
                 if any(lite_by_id.get(i, {}).get("relaxed") for i in final_ids):
@@ -920,7 +845,7 @@ async def recommendation_node(state: GraphState):
         for lst in await asyncio.gather(*jobs):
             for c in lst:
                 full_by_key[f"{c.get('media_type') or 'movie'}:{c['movie_id']}"] = c
-        for k in final_ids:                                   # sırayı aday listesinden değil final_ids'ten al
+        for k in final_ids:
             card = full_by_key.get(k) or lite_by_id.get(k)
             if card:
                 pfit = lite_by_id.get(k, {}).get("_persona_fit")
@@ -952,7 +877,7 @@ async def movie_info_node(state: GraphState):
     tools = {"movie": ["get_movie_card"], "tv": ["get_series_card"],
              "both": ["get_movie_card", "get_series_card"]}[spec.media_type]
     cards, calls, results = [], [], []
-    for tool in tools:                      # 'both': önce film, bulunamazsa dizi
+    for tool in tools:
         try:
             result = await asyncio.wait_for(ctx.session.call_tool(tool, args), timeout=TOOL_TIMEOUT)
             raw = result.content[0].text
@@ -1026,7 +951,6 @@ async def get_tools(session):
     ]
 
 
-# Geriye dönük uyumluluk için alias
 get_ollama_tools = get_tools
 
 
@@ -1126,7 +1050,7 @@ async def generate_user_suggestions(chat_history_text, favorites_text):
 
 
 # ============================================================================
-# 3) ARKA PLAN ÖNERİSİ: adaylar araçlardan gelir, LLM sadece seçer + yazar
+# 4) ARKA PLAN VE WEB ÖNERİ MOTORU (Çoklu Öneri & Soğuk Başlangıç Destekli)
 # ============================================================================
 async def _call_tool_cards(name: str, args: dict) -> List[dict]:
     try:
@@ -1150,7 +1074,7 @@ def _pick_seeds(pool: List[dict], n: int) -> List[dict]:
 
 async def gather_push_candidates(user_id: int, favs: List[dict], exclude_ids: set, exclude_titles: set,
                                  persona: Optional[dict] = None, liked: Optional[List[dict]] = None,
-                                 n_seeds: int = 3, top_n: int = 12) -> List[dict]:
+                                 n_seeds: int = 4, top_n: int = 18) -> List[dict]:
     persona = persona or {}
     avoid = _avoid_genres(persona)
 
@@ -1161,13 +1085,13 @@ async def gather_push_candidates(user_id: int, favs: List[dict], exclude_ids: se
         if s.get("Film") and sid not in seen_seed:
             seen_seed.add(sid)
             pool.append(s)
-    seeds = _pick_seeds(pool[:12], n_seeds)
+    seeds = _pick_seeds(pool[:15], n_seeds)
 
     seed_jobs = []
     for s in seeds:
         args = {"movie_title": s["Film"]}
         if str(s.get("movie_id") or "").isdigit():
-            args["movie_id"] = int(s["movie_id"])      # başlıkla arama aynı adlı filmleri karıştırır
+            args["movie_id"] = int(s["movie_id"])
         seed_jobs.append(_call_tool_cards("get_similar_movies", args))
 
     cf_args = {"user_id": user_id, "limit": 15, "min_votes": MIN_VOTES, "max_rating": 10.0}
@@ -1175,13 +1099,20 @@ async def gather_push_candidates(user_id: int, favs: List[dict], exclude_ids: se
         cf_args["exclude_genres"] = ", ".join(sorted(avoid))
     extra_jobs = [_call_tool_cards("get_collaborative_recommendations", cf_args)]
 
-    # Soğuk başlangıç: tohum yoksa profilin en güçlü türlerinden aday çek.
-    top_genres = _top_genres(persona, 2)
-    if not seeds and top_genres:
-        f_args = {"genre_name": ",".join(top_genres), "min_votes": MIN_VOTES, "limit": 20}
+    # Profilin en güçlü türlerinden her zaman aday çek (çeşitlilik ve sık öneri için)
+    top_genres = _top_genres(persona, 3)
+    if top_genres:
+        f_args = {"genre_name": ",".join(top_genres[:2]), "min_votes": MIN_VOTES, "limit": 20}
         if avoid:
             f_args["exclude_genres"] = ", ".join(sorted(avoid))
         extra_jobs.append(_call_tool_cards("search_movies_by_filters", f_args))
+
+    # Soğuk başlangıç (hiç favori/tohum ve tür yoksa): Genel yüksek puanlı popüler filmlerden getir
+    if not seeds and not top_genres:
+        cold_args = {"min_rating": 7.3, "min_votes": 500, "sort_by": "popularity.desc", "limit": 20}
+        if avoid:
+            cold_args["exclude_genres"] = ", ".join(sorted(avoid))
+        extra_jobs.append(_call_tool_cards("search_movies_by_filters", cold_args))
 
     results = await asyncio.gather(*seed_jobs, *extra_jobs)
     seed_results, extra_results = results[:len(seeds)], results[len(seeds):]
@@ -1189,17 +1120,17 @@ async def gather_push_candidates(user_id: int, favs: List[dict], exclude_ids: se
     lists = []
     for seed, cards in zip(seeds, seed_results):
         for c in cards:
-            c["_because"] = seed["Film"]          # gerekçe için hangi favori/beğeniden geldi
+            c["_because"] = seed["Film"]
         lists.append(cards)
-    lists.extend(extra_results)                    # collaborative / persona türü: _because yok
+    lists.extend(extra_results)
 
     candidates = []
     for c in merge_candidates(lists):
         mid = str(c.get("movie_id") or "")
         title = (c.get("Film") or "").lower().strip()
-        if not mid or mid in exclude_ids or title in exclude_titles:   # favori + gösterilenler + dislike
+        if not mid or mid in exclude_ids or title in exclude_titles:
             continue
-        if avoid & _card_genres(c):                                      # profilde kaçınılan türler
+        if avoid & _card_genres(c):
             continue
         if c.get("vote_count", 0) < MIN_VOTES:
             continue
@@ -1210,73 +1141,113 @@ async def gather_push_candidates(user_id: int, favs: List[dict], exclude_ids: se
         candidates.append(c)
 
     candidates.sort(key=lambda c: c["_pscore"], reverse=True)
+    if MMR_ENABLED and len(candidates) > top_n:
+        return mmr_rerank(candidates, limit=top_n, lambda_param=MMR_LAMBDA)
     return candidates[:top_n]
 
 
-PICK_SYSTEM = """Sen samimi bir film danışmanısın. ADAY LİSTESİNDEN kullanıcının profiline en uygun TEK filmi seç ve kısa bir bildirim yaz.
+PICK_BATCH_SYSTEM = """Sen samimi bir film danışmanısın. ADAY LİSTESİNDEN kullanıcının profiline en uygun {count} filmi seç ve her biri için kısa, merak uyandırıcı bir öneri mesajı yaz.
 Kurallar:
-- SADECE listedeki bir filmi seç; id'yi listeden AYNEN kopyala.
-- Mesaj Türkçe, en fazla 150 karakter, samimi ve merak uyandırıcı olsun.
-- Mesajda yalnızca listede yazan bilgileri kullan. Yönetmen, oyuncu, yıl, ödül gibi listede olmayan hiçbir şeyi söyleme.
+- SADECE listedeki filmleri seç; id'leri listeden AYNEN kopyala.
+- Her mesaj Türkçe, en fazla 150 karakter, samimi ve merak uyandırıcı olsun.
+- Mesajda yalnızca listede yazan bilgileri kullan.
 - "Neden aday" alanında bir film adı varsa mesajda ona atıf yapabilirsin.
 - Profilde kaçındığı belirtilen tür veya temalardan seçme.
-Çıktı SADECE JSON: {"id": "...", "message": "..."}"""
+Çıktı SADECE JSON: {{"picks": [{{"id": "...", "message": "..."}}]}}"""
 
 
 def _cand_line(c: dict) -> str:
-    why = f"{c['_because']} filmine benzer" if c.get("_because") else "zevkine yakın kullanıcılar sevdi"
+    why = f"{c['_because']} filmine benzer" if c.get("_because") else "zevkine ve popüler eğilimlere uygun"
     return (f"[ID:{c['movie_id']}] {c.get('Film', '')} ({c.get('Yıl', '')}) | puan {c.get('TMDB Puanı', '?')} | "
             f"{c.get('Türler', '')} | {(c.get('Özet') or '')[:200]} | Neden aday: {why}")
 
 
 def _fallback_message(c: dict) -> str:
     if c.get("_because"):
-        return f"{c['_because']} filmini sevdiysen {c['Film']} de hoşuna gidebilir! 🍿"[:150]
-    return f"Senin için bir film buldum: {c['Film']}! 🍿"[:150]
+        return f"{c['_because']} filmini sevdiysen {c['Film']} ({c.get('Yıl', '')}) tam sana göre! 🍿"[:150]
+    return f"Zevkine çok uyacağını düşündüğüm harika bir öneri: {c['Film']}! 🍿"[:150]
 
 
-async def build_push_recommendation(user_id: int, persona: str, favs: List[dict],
-                                    exclude_ids: set, exclude_titles: set,
-                                    liked: Optional[List[dict]] = None) -> Optional[dict]:
-    """-> {"movie_id", "title", "message", "reason", "source"} veya None (uygun aday yoksa)."""
-    cands = await gather_push_candidates(user_id, favs, exclude_ids, exclude_titles,
-                                         persona=_persona_obj(persona), liked=liked)
+async def build_push_recommendations_batch(
+    user_id: int, persona: str, favs: List[dict],
+    exclude_ids: set, exclude_titles: set,
+    liked: Optional[List[dict]] = None,
+    count: int = 3
+) -> List[dict]:
+    """Tek seferde birden fazla (varsayılan 3) öneri üretir."""
+    cands = await gather_push_candidates(
+        user_id, favs, exclude_ids, exclude_titles,
+        persona=_persona_obj(persona), liked=liked, top_n=max(15, count * 5)
+    )
     if not cands:
         logger.info(f"Push adayı yok (user={user_id})")
-        return None
+        return []
     by_id = {str(c["movie_id"]): c for c in cands}
 
-    pick_id, message = None, None
+    selected_items = []
+    seen_pids = set()
+
     try:
-        user_msg = (f"PROFİL: {persona}\nFAVORİLER: {', '.join(f['Film'] for f in favs[:10]) or 'yok'}\n\n"
+        user_msg = (f"PROFİL: {persona or '{}'}\nFAVORİLER: {', '.join(f['Film'] for f in favs[:10]) or 'yok'}\n\n"
                     "ADAY LİSTESİ:\n" + "\n".join(_cand_line(c) for c in cands))
-        resp = await aclient.ainvoke([SystemMessage(content=PICK_SYSTEM), HumanMessage(content=user_msg)])
+        resp = await aclient.ainvoke([
+            SystemMessage(content=PICK_BATCH_SYSTEM.format(count=count)),
+            HumanMessage(content=user_msg)
+        ])
         raw = resp.content
         text = " ".join(c.get("text", "") if isinstance(c, dict) else str(c) for c in raw) if isinstance(raw, list) else str(raw)
         clean = re.sub(r'```json\s?|```', '', text).strip()
         m = re.search(r'(\{.*\})', clean, re.DOTALL)
         data = json.loads(m.group(1) if m else clean)
-        pid = str(data.get("id", "")).replace("ID:", "").strip()
-        if pid in by_id:
-            pick_id, message = pid, (data.get("message") or "").strip()
-        else:
-            logger.warning(f"LLM listede olmayan id döndürdü: {pid!r}")       # uydurma id'yi at
+        picks = data.get("picks") or ([data] if "id" in data else [])
+        for p in picks:
+            if not isinstance(p, dict):
+                continue
+            pid = str(p.get("id", "")).replace("ID:", "").strip()
+            if pid in by_id and pid not in seen_pids:
+                seen_pids.add(pid)
+                selected_items.append((by_id[pid], (p.get("message") or "").strip()))
+            if len(selected_items) >= count:
+                break
     except Exception:
-        logger.error("Öneri seçimi (LLM) başarısız, ilk aday kullanılacak", exc_info=True)
+        logger.error("Çoklu öneri seçimi (LLM) başarısız, en yüksek skorlu adaylar kullanılacak", exc_info=True)
 
-    chosen = by_id.get(pick_id) or cands[0]
-    if not message:
-        message = _fallback_message(chosen)
-    if len(message) > 180:
-        message = message[:177] + "…"
+    # Eksik kalanları en yüksek skorlu adaylardan tamamla
+    for c in cands:
+        if len(selected_items) >= count:
+            break
+        cid = str(c["movie_id"])
+        if cid not in seen_pids:
+            seen_pids.add(cid)
+            selected_items.append((c, ""))
 
-    reason = (f"{chosen['_because']} filmini sevdiğin için" if chosen.get("_because")
-              else "Zevkine yakın kullanıcılar bu filmi sevdi")
-    srcs = " ".join(chosen.get("_sources") or [])
-    source = ("similar" if chosen.get("_because")
-              else "persona_genre" if "tmdb_filter" in srcs else "collaborative")
-    return {"movie_id": str(chosen["movie_id"]), "title": chosen.get("Film"),
-            "message": message, "reason": reason, "source": source}
+    out = []
+    for chosen, message in selected_items:
+        if not message:
+            message = _fallback_message(chosen)
+        if len(message) > 180:
+            message = message[:177] + "…"
+        reason = (f"{chosen['_because']} filmini sevdiğin için" if chosen.get("_because")
+                  else "İzleme profiline ve zevkine uygun olduğu için")
+        srcs = " ".join(chosen.get("_sources") or [])
+        source = ("similar" if chosen.get("_because")
+                  else "persona_genre" if "tmdb_filter" in srcs else "collaborative")
+        out.append({
+            "movie_id": str(chosen["movie_id"]),
+            "title": chosen.get("Film"),
+            "message": message,
+            "reason": reason,
+            "source": source,
+        })
+    return out
+
+
+async def build_push_recommendation(user_id: int, persona: str, favs: List[dict],
+                                    exclude_ids: set, exclude_titles: set,
+                                    liked: Optional[List[dict]] = None) -> Optional[dict]:
+    """Geriye dönük uyumluluk için tekli öneri döndüren sarmalayıcı."""
+    res = await build_push_recommendations_batch(user_id, persona, favs, exclude_ids, exclude_titles, liked=liked, count=1)
+    return res[0] if res else None
 
 
 async def _cli_main():
@@ -1373,7 +1344,6 @@ async def _cli_main():
             if text.lower() in ("exit", "quit"):
                 break
 
-            # Komut kontrolleri
             if text == "/profile":
                 show_profile()
                 continue
@@ -1410,7 +1380,6 @@ async def _cli_main():
                 print(f"👁️ ID={sid} görülenler listesine eklendi.")
                 continue
 
-            # State hazırla
             persona_json = json.dumps(current_profile, ensure_ascii=False) if current_profile else "{}"
             state: GraphState = {
                 "prompt": text,
@@ -1431,7 +1400,6 @@ async def _cli_main():
                     print(f"🚫 Avoid Filtresi: {current_profile.get('avoid')}")
 
             try:
-                # Düğümleri astream ile adım adım izle
                 async for event in app.astream(state):
                     for node_name, state_update in event.items():
                         if node_name == "intent_analyzer":
